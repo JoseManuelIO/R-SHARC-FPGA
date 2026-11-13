@@ -1,0 +1,99 @@
+--- a/include/mpc/Types.hpp
++++ b/include/mpc/Types.hpp
+@@ -156,6 +156,7 @@
+ 
+         bool verbose = false;
+         bool adaptive_rho = true;
++        int adaptive_rho_interval = 0;
+         bool polish = true;
+     };
+ 
+@@ -181,6 +182,10 @@
+         ResultStatus status;
+         cvec<Tnu> cmd;
+         int num_iterations;
++        int adaptive_rho_interval = 0;
++        int rho_updates = 0;
++        double rho_estimate = 0.0;
++        double rho_final = 0.0;
+     };
+ 
+     template <
+--- a/include/mpc/LMPC/LOptimizer.hpp
++++ b/include/mpc/LMPC/LOptimizer.hpp
+@@ -247,13 +247,16 @@
+                 settings->verbose = lin_params.verbose ? 1 : 0;
+                 settings->rho = lin_params.rho;
+                 settings->adaptive_rho = lin_params.adaptive_rho ? 1 : 0;
++                settings->adaptive_rho_interval = lin_params.adaptive_rho_interval;
+                 settings->eps_rel = lin_params.eps_rel;
+                 settings->eps_abs = lin_params.eps_abs;
+                 settings->eps_prim_inf = lin_params.eps_prim_inf;
+                 settings->eps_dual_inf = lin_params.eps_dual_inf;
+                 settings->max_iter = lin_params.maximum_iteration;
+                 settings->polish = lin_params.polish ? 1 : 0;
++#ifdef PROFILING
+                 settings->time_limit = lin_params.time_limit;
++#endif
+                 settings->warm_start = lin_params.enable_warm_start ? 1 : 0;
+             }
+ 
+@@ -348,6 +351,12 @@
+                 // convert the return code from the optimizer to the result status
+                 r.status = convertToResultStatus(r.solver_status);
+                 r.num_iterations = work->info->iter;
++#if EMBEDDED != 1
++                r.adaptive_rho_interval = work->settings->adaptive_rho_interval;
++                r.rho_updates = work->info->rho_updates;
++                r.rho_estimate = work->info->rho_estimate;
++                r.rho_final = work->settings->rho;
++#endif
+             }
+             else
+             {
+@@ -407,8 +416,10 @@
+                 return ResultStatus::SUCCESS;
+             case OSQP_SIGINT:
+                 return ResultStatus::ERROR;
++#ifdef PROFILING
+             case OSQP_TIME_LIMIT_REACHED:
+                 return ResultStatus::UNKNOWN;
++#endif
+             case OSQP_NON_CVX:
+                 return ResultStatus::ERROR;
+             case OSQP_UNSOLVED:
+@@ -487,6 +498,7 @@
+         void clearData()
+         {
+             osqp_cleanup(work);
++            work = nullptr;
+ 
+             if (data)
+             {
+@@ -499,11 +511,13 @@
+                     csc_spfree(data->P);
+                 }
+                 c_free(data);
++                data = nullptr;
+             }
+ 
+             if (settings)
+             {
+                 c_free(settings);
++                settings = nullptr;
+             }
+         }
+ 
+@@ -519,9 +533,9 @@
+             data->A = nullptr;
+         }
+ 
+-        OSQPWorkspace *work;
+-        OSQPSettings *settings;
+-        OSQPData *data;
++        OSQPWorkspace *work = nullptr;
++        OSQPSettings *settings = nullptr;
++        OSQPData *data = nullptr;
+         c_int exitflag = 0;
+ 
+         mat<sizer.ny, sizer.ph> outSysRef;

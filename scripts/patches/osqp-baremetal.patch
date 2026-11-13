@@ -1,0 +1,11 @@
+--- a/lin_sys/CMakeLists.txt
++++ b/lin_sys/CMakeLists.txt
+@@ -14,7 +14,7 @@
+ # TODO: Add!
+ 
+ # Add linsys handler if not embedded
+-if (NOT DEFINED EMBEDDED)
++if (NOT DEFINED EMBEDDED AND (IS_LINUX OR IS_MAC OR IS_WINDOWS))
+ set(linsys_lib_handler
+     ${CMAKE_CURRENT_SOURCE_DIR}/lib_handler.c
+     ${CMAKE_CURRENT_SOURCE_DIR}/lib_handler.h)

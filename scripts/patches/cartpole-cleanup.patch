@@ -1,0 +1,1856 @@
+--- a/src/cartpole/NLMPCController.cpp
++++ b/src/cartpole/NLMPCController.cpp
+@@ -31,7 +31,7 @@
+     sample_time = json_data.at("system_parameters").at("sample_time");
+     input_cost_weight = json_data.at("system_parameters").at("mpc_options").at("input_cost_weight");
+ 
+-    nlmpc.setLoggerLevel(mpc::Logger::log_level::NORMAL);
++    nlmpc.setLoggerLevel(mpc::Logger::log_level::NONE);
+     nlmpc.setDiscretizationSamplingTime(sample_time);
+ 
+     // Dynamics differential equation
+@@ -110,59 +110,15 @@
+     control = nlmpc_step_result.cmd;
+ 
+     latest_metadata.clear();
+-    latest_metadata["iterations"] = nullptr;
+-    latest_metadata["iterations_available"] = false;
+-    latest_metadata["num_evals"] = nlmpc_step_result.num_evaluations;
+     latest_metadata["solver_status"] = nlmpc_step_result.solver_status;
+-    latest_metadata["solver_status_original"] = nlmpc_step_result.solver_status_original;
+-    latest_metadata["used_fallback"] = nlmpc_step_result.used_fallback;
+-#ifdef RSHARC_CARTPOLE_WARM_START_DIAGNOSTIC
+-    const auto& warm = nlmpc_step_result.warm_start;
+-    latest_metadata["warm_start_diagnostic"] = {
+-        {"call_index", warm.call_index}, {"reused", warm.reused},
+-        {"state_input", warm.state_input}, {"control_input", warm.control_input},
+-        {"previous_decision", warm.previous_decision}, {"initial_guess", warm.initial_guess},
+-        {"solved_decision", warm.solved_decision}};
+-#endif
+-    latest_metadata["solver_status_msg"] = nlmpc_step_result.solver_status_msg;
+     latest_metadata["is_feasible"] = nlmpc_step_result.is_feasible;
+-    latest_metadata["cost_available"] =
+-        !nlmpc_step_result.used_fallback && std::isfinite(nlmpc_step_result.cost);
+-    if (latest_metadata["cost_available"].get<bool>()) {
+-        latest_metadata["cost"] = nlmpc_step_result.cost;
+-    } else {
+-        latest_metadata["cost"] = nullptr;
+-    }
+-    const auto& diagnostic = nlmpc_step_result.constraints;
+-    latest_metadata["constraint_error_available"] = diagnostic.available;
+-    latest_metadata["bound_violation_available"] = diagnostic.available;
+-    latest_metadata["constraint_error"] = diagnostic.available
+-        ? nlohmann::json(diagnostic.dynamics_residual) : nlohmann::json(nullptr);
+-    latest_metadata["bound_violation"] = diagnostic.available
+-        ? nlohmann::json(diagnostic.bound_violation) : nlohmann::json(nullptr);
+-    latest_metadata["dynamics_tolerance"] = diagnostic.available
+-        ? nlohmann::json(diagnostic.dynamics_tolerance) : nlohmann::json(nullptr);
+-    latest_metadata["dynamics_constraints_satisfied"] = diagnostic.available
+-        ? nlohmann::json(diagnostic.dynamics_satisfied) : nlohmann::json(nullptr);
+-    latest_metadata["bounds_satisfied"] = diagnostic.available
+-        ? nlohmann::json(diagnostic.bounds_satisfied) : nlohmann::json(nullptr);
+-#ifdef RSHARC_CARTPOLE_EXPORT_PREDICTION
+-    // Native validation builds only; no prediction JSON in the target runtime.
+-    if (!nlmpc_step_result.used_fallback) {
+-        const auto sequence = nlmpc.getOptimalSequence();
+-        latest_metadata["diagnostic_prediction"] = {{"states", nlohmann::json::array()},
+-                                                    {"inputs", nlohmann::json::array()}};
+-        for (int i = 0; i <= prediction_horizon; ++i) {
+-            nlohmann::json row = nlohmann::json::array();
+-            for (int j = 0; j < Tnx; ++j) row.push_back(sequence.state(i, j));
+-            latest_metadata["diagnostic_prediction"]["states"].push_back(row);
+-            latest_metadata["diagnostic_prediction"]["inputs"].push_back(sequence.input(i, 0));
+-        }
+-    }
+-#endif
+-    latest_metadata["dual_residual"] = nullptr;
+-    latest_metadata["dual_residual_available"] = false;
+-    latest_metadata["status"] = mpc::SolutionStats::resultStatusToString(nlmpc_step_result.status);
++    const bool cost_available = std::isfinite(nlmpc_step_result.cost);
++    latest_metadata["cost_available"] = cost_available;
++    latest_metadata["cost"] = cost_available
++        ? nlohmann::json(nlmpc_step_result.cost)
++        : nlohmann::json(nullptr);
++    latest_metadata["status"] =
++        mpc::SolutionStats::resultStatusToString(nlmpc_step_result.status);
+ }
+ 
+ // Register the controller
+--- /dev/null
++++ b/src/cartpole/cartpole_channel.hpp
+@@ -0,0 +1,54 @@
++#pragma once
++#include <bit>
++#include <cstddef>
++#include <cstdint>
++#include <limits>
++#include <type_traits>
++
++// Local binary protocol for little-endian x86-64 and RV64.
++struct CartpoleStepInput {
++  std::uint64_t k;
++  double t;
++  double x[4];
++  double w[1];
++  double u_previous[1];
++};
++struct CartpoleStepOutput {
++  std::uint64_t k;
++  std::int64_t solver_status;
++  std::uint64_t is_feasible;
++  std::uint64_t cost_available;
++  double u;
++  double cost;
++  std::uint64_t cycles;
++  std::uint64_t instret;
++  std::uint64_t heap_peak;
++  std::uint64_t heap_capacity;
++};
++
++// 0=acknowledged, 1=ready, 2=request published, 3=response published.
++struct alignas(64) CartpoleMailbox {
++  std::uint64_t state;
++  std::uint64_t reserved[7];
++  alignas(64) CartpoleStepInput input;
++  alignas(64) CartpoleStepOutput output;
++};
++static_assert(std::endian::native == std::endian::little);
++static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
++static_assert(std::is_standard_layout_v<CartpoleStepInput>);
++static_assert(std::is_trivially_copyable_v<CartpoleStepInput>);
++static_assert(std::is_standard_layout_v<CartpoleStepOutput>);
++static_assert(std::is_trivially_copyable_v<CartpoleStepOutput>);
++static_assert(sizeof(CartpoleStepInput) == 64);
++static_assert(offsetof(CartpoleStepInput, t) == 8);
++static_assert(offsetof(CartpoleStepInput, x) == 16);
++static_assert(offsetof(CartpoleStepInput, w) == 48);
++static_assert(offsetof(CartpoleStepInput, u_previous) == 56);
++static_assert(sizeof(CartpoleStepOutput) == 80);
++static_assert(offsetof(CartpoleStepOutput, u) == 32);
++static_assert(offsetof(CartpoleStepOutput, cost) == 40);
++static_assert(offsetof(CartpoleStepOutput, cycles) == 48);
++static_assert(offsetof(CartpoleStepOutput, heap_peak) == 64);
++static_assert(offsetof(CartpoleMailbox, input) == 64);
++static_assert(offsetof(CartpoleMailbox, output) == 128);
++static_assert(sizeof(CartpoleMailbox) == 256);
+--- a/src/cartpole/main.cpp
++++ b/src/cartpole/main.cpp
+@@ -0,0 +1,163 @@
++#include <cmath>
++#include <cstdio>
++#include <cstdint>
++#include <memory>
++#include <nlopt.h>
++#include "NLMPCController.h"
++#include "cartpole_channel.hpp"
++#include "cartpole_config.hpp"
++#include "debug_levels.hpp"
++
++DebugLevels global_debug_levels;
++
++#ifdef RSHARC_CARTPOLE_CVA6_CHANNEL
++extern "C" { alignas(64) volatile CartpoleMailbox rsharc_cartpole_mailbox{}; }
++extern "C" std::size_t rsharc_heap_high_water();
++extern "C" std::size_t rsharc_heap_capacity();
++
++// CVA6-specific CSR: bypass D-cache only during host exchange. The stock
++// runner's RAM is cacheable; fence alone cannot make host writes coherent.
++// Restore the previous setting before entering the MPC. No RTL/PMA changes.
++static std::uint64_t exchange_begin() {
++  std::uint64_t previous;
++  asm volatile("fence rw,rw\ncsrrw %0, 0x7c1, zero\nfence rw,rw"
++               : "=r"(previous) :: "memory");
++  return previous;
++}
++static void exchange_end(std::uint64_t previous) {
++  asm volatile("fence rw,rw\ncsrw 0x7c1, %0\nfence rw,rw"
++               :: "r"(previous) : "memory");
++}
++static bool receive(CartpoleStepInput& input) {
++  const auto previous = exchange_begin();
++  rsharc_cartpole_mailbox.state = 1;
++  asm volatile("fence rw,rw" ::: "memory");
++  while (rsharc_cartpole_mailbox.state != 2) {}
++  asm volatile("fence rw,rw" ::: "memory");
++  auto* dst = reinterpret_cast<unsigned char*>(&input);
++  const auto* src = reinterpret_cast<const volatile unsigned char*>(&rsharc_cartpole_mailbox.input);
++  for (std::size_t i = 0; i < sizeof(input); ++i) dst[i] = src[i];
++  exchange_end(previous);
++  return true;
++}
++static bool send(const CartpoleStepOutput& output) {
++  const auto previous = exchange_begin();
++  const auto* src = reinterpret_cast<const unsigned char*>(&output);
++  auto* dst = reinterpret_cast<volatile unsigned char*>(&rsharc_cartpole_mailbox.output);
++  for (std::size_t i = 0; i < sizeof(output); ++i) dst[i] = src[i];
++  asm volatile("fence rw,rw" ::: "memory");
++  rsharc_cartpole_mailbox.state = 3;
++  asm volatile("fence rw,rw" ::: "memory");
++  while (rsharc_cartpole_mailbox.state != 0) {}
++  exchange_end(previous);
++  return true;
++}
++#elif defined(__riscv)
++extern "C" volatile std::uint64_t tohost, fromhost;
++extern "C" std::size_t rsharc_heap_high_water();
++extern "C" std::size_t rsharc_heap_capacity();
++// Spike HTIF syscall device. read/write are handled by fesvr, without an OS.
++static bool transfer(std::uint64_t operation, void* data, std::size_t size) {
++  auto* cursor = static_cast<unsigned char*>(data);
++  while (size) {
++    alignas(64) volatile std::uint64_t request[8] = {
++      operation, operation == 63 ? 0ULL : 1ULL,
++      reinterpret_cast<std::uintptr_t>(cursor), size, 0, 0, 0, 0};
++    while (tohost) {}
++    asm volatile("fence rw,rw" ::: "memory");
++    tohost = reinterpret_cast<std::uintptr_t>(request);
++    while (!fromhost) {}
++    asm volatile("fence rw,rw" ::: "memory");
++    fromhost = 0;
++    const auto count = static_cast<std::int64_t>(request[0]);
++    if (count <= 0 || static_cast<std::uint64_t>(count) > size) return false;
++    cursor += count;
++    size -= count;
++  }
++  return true;
++}
++static bool receive(CartpoleStepInput& input) { return transfer(63, &input, sizeof(input)); }
++static bool send(CartpoleStepOutput& output) { return transfer(64, &output, sizeof(output)); }
++#else
++static bool receive(CartpoleStepInput& input) {
++  return std::fread(&input, sizeof(input), 1, stdin) == 1;
++}
++static bool send(const CartpoleStepOutput& output) {
++  return std::fwrite(&output, sizeof(output), 1, stdout) == 1 && std::fflush(stdout) == 0;
++}
++#endif
++
++static std::uint64_t cycle() {
++  std::uint64_t value = 0;
++#ifdef __riscv
++  asm volatile("rdcycle %0" : "=r"(value) :: "memory");
++#endif
++  return value;
++}
++static std::uint64_t instret() {
++  std::uint64_t value = 0;
++#ifdef __riscv
++  asm volatile("rdinstret %0" : "=r"(value) :: "memory");
++#endif
++  return value;
++}
++
++// As in the original service: seed each solve with the host's previous control.
++class CartpoleServiceController final : public NLMPCController {
++ public:
++  using NLMPCController::NLMPCController;
++  void seedControl(const uVec& previous) { control = previous; }
++};
++
++#ifndef RSHARC_CARTPOLE_MAX_STEPS
++#define RSHARC_CARTPOLE_MAX_STEPS 64
++#endif
++static_assert(RSHARC_CARTPOLE_MAX_STEPS >= 1 && RSHARC_CARTPOLE_MAX_STEPS <= 64);
++static_assert(TNX == 4 && TNU == 1 && TNDU == 1 && TNY == 1);
++
++int main() {
++  try {
++    nlopt_srand(0);
++    // Silence construction logs as well as solve logs on the binary channel.
++    mpc::Logger::instance().setLevel(mpc::Logger::log_level::NONE);
++    const auto config = nlohmann::json::parse(rsharc_cartpole::config_json);
++    auto controller = std::make_unique<CartpoleServiceController>(config);
++    for (std::uint64_t k = 0; k < RSHARC_CARTPOLE_MAX_STEPS; ++k) {
++      CartpoleStepInput input{};
++      if (!receive(input) || input.k != k || !std::isfinite(input.t)) return 88;
++      for (double v : input.x) if (!std::isfinite(v)) return 88;
++      for (double v : input.w) if (!std::isfinite(v)) return 88;
++      for (double v : input.u_previous) if (!std::isfinite(v)) return 88;
++      xVec state;
++      wVec disturbance;
++      uVec previous;
++      for (int i = 0; i < TNX; ++i) state(i) = input.x[i];
++      disturbance(0) = input.w[0];
++      previous(0) = input.u_previous[0];
++      controller->seedControl(previous);
++      const auto c0 = cycle(), i0 = instret();
++      controller->calculateControl(static_cast<int>(k), input.t, state, disturbance);
++      const auto i1 = instret(), c1 = cycle();
++      const auto control = controller->getLatestControl();
++      if (!control.allFinite()) return 90;
++      const auto metadata = controller->getLatestMetadata();
++      CartpoleStepOutput output{};
++      output.k = k;
++      output.solver_status = metadata.at("solver_status").get<int>();
++      output.is_feasible = metadata.at("is_feasible").get<bool>();
++      output.cost_available = metadata.at("cost_available").get<bool>();
++      output.u = control(0);
++      if (output.cost_available) output.cost = metadata.at("cost").get<double>();
++      output.cycles = c1 - c0;
++      output.instret = i1 - i0;
++#ifdef __riscv
++      output.heap_peak = rsharc_heap_high_water();
++      output.heap_capacity = rsharc_heap_capacity();
++#endif
++      if (!send(output)) return 89;
++    }
++    return 0;
++  } catch (const std::exception&) {
++    return 90;
++  }
++}
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-# ACC baseline x86-64 / RV64GC. Las bibliotecas originales permanecen en external/.
++# ACC y Cartpole baseline x86-64 / RV64GC. Las bibliotecas originales permanecen en external/.
+ .DEFAULT_GOAL := acc
+ .DELETE_ON_ERROR:
+ 
+@@ -17,7 +17,7 @@
+ SEED ?= 475092611
+ CVA6_TB ?=
+ CVA6_BUILD ?=
+-ACC_RUNNER_DIR := $(CURDIR)/build/cva6-channel
++CVA6_RUNNER_DIR ?= $(CURDIR)/build/cva6-mpc-channel
+ REFERENCE ?= $(CURDIR)/build/x86/acc/64/results/capture.bin
+ VALID_STEPS := $(shell seq 1 64)
+ ifeq ($(filter $(ACC_STEPS),$(VALID_STEPS)),)
+@@ -125,19 +125,22 @@
+ 	+$(Q)$(MAKE) PROFILE=verilator run-current
+ 
+ run-current: acc
+-	$(Q)$(PYTHON) scripts/validate_acc.py run --mode "$(PROFILE)" --elf "$(ACC_ELF)" \
++	$(Q)$(PYTHON) scripts/run_closed_loop.py run --mode "$(PROFILE)" --elf "$(ACC_ELF)" \
+ 	  --steps $(ACC_STEPS) --out "$(RESULTS)" --prefix "$(RISCV_PREFIX)" \
+ 	  --spike "$(SPIKE)" --runner "$(CVA6_RUNNER)" --max-cycles $(MAX_CYCLES) --timeout $(HOST_TIMEOUT) \
+ 	  --seed $(SEED) $(if $(filter verilator,$(PROFILE)),--reference "$(REFERENCE)",)
+ 
+ validate-acc:
+-	$(Q)$(PYTHON) scripts/validate_acc.py compare \
++	$(Q)$(PYTHON) scripts/run_closed_loop.py compare \
+ 	  --observed "$(CURDIR)/build/verilator/acc/$(ACC_STEPS)/results/capture.bin" \
+ 	  --reference "$(REFERENCE)" --steps $(ACC_STEPS)
+ 
+-prepare-acc-runner:
+-	$(Q)$(PYTHON) scripts/validate_acc.py prepare-runner --source "$(CVA6_TB)" \
+-	  --runner-build "$(CVA6_BUILD)" --out "$(ACC_RUNNER_DIR)"
++.PHONY: prepare-runner prepare-cartpole-runner
++prepare-acc-runner prepare-cartpole-runner: prepare-runner
++
++prepare-runner:
++	$(Q)$(PYTHON) scripts/run_closed_loop.py prepare-runner --source "$(CVA6_TB)" \
++	  --runner-build "$(CVA6_BUILD)" --out "$(CVA6_RUNNER_DIR)"
+ 
+ help:
+ 	@printf '%s\n' \
+@@ -147,6 +150,12 @@
+ 	  'make run-acc-verilator ACC_STEPS=1 CVA6_RUNNER=/ruta/al/runner' \
+ 	  'make prepare-acc-runner CVA6_TB=/ruta/ariane_tb.cpp CVA6_BUILD=/ruta/build' \
+ 	  'make validate-acc ACC_STEPS=64     Comparar capturas actuales, sin lanzar RTL.' \
++	  'make cartpole / cartpole-x86       Compilar Cartpole para Spike / x86.' \
++	  'make cartpole-verilator            Compilar Cartpole para CVA6.' \
++	  'make run-cartpole-x86              Bucle cerrado Cartpole en x86.' \
++	  'make run-cartpole                  x86 + Spike y comparacion numerica.' \
++	  'make run-cartpole-verilator CARTPOLE_STEPS=1 CVA6_RUNNER=/ruta/al/runner' \
++	  'make prepare-cartpole-runner CVA6_TB=/ruta/ariane_tb.cpp CVA6_BUILD=/ruta/build' \
+ 	  'make clean                        Borrar el BUILD_DIR seleccionado.' \
+ 	  'Opciones: RISCV_PREFIX, HOST_CC, HOST_CXX, ACC_STEPS=1..64, SPIKE, V=1.'
+ 
+@@ -281,3 +290,104 @@
+ 
+ $(NLOPT_LIB): $(NLOPT_CONFIGURED) $(NLOPT_INPUTS)
+ 	+$(Q)"$(CMAKE)" --build "$(NLOPT_BUILD)" --target nlopt
++
++# Servicio Cartpole escalar: misma configuracion en x86, Spike y CVA6.
++CARTPOLE_STEPS ?= 64
++CARTPOLE_MAX_CYCLES ?= 100000000000
++CARTPOLE_HOST_TIMEOUT ?= 1209600
++ifeq ($(filter $(CARTPOLE_STEPS),$(VALID_STEPS)),)
++$(error CARTPOLE_STEPS debe estar entre 1 y 64)
++endif
++
++CARTPOLE_DIR := $(BUILD)/cartpole/$(CARTPOLE_STEPS)
++CARTPOLE_ELF := $(CARTPOLE_DIR)/cartpole.elf
++CARTPOLE_MAP := $(CARTPOLE_DIR)/cartpole.map
++CARTPOLE_CONFIG := $(CARTPOLE_DIR)/build-config.txt
++CARTPOLE_CONFIG_HEADER := $(BUILD)/include/cartpole_config.hpp
++CARTPOLE_CXXFLAGS := -std=c++20 -O2 -DNDEBUG $(ARCH_FLAGS) $(FP_FLAGS) \
++                     -ffunction-sections -fdata-sections
++CARTPOLE_DEFINES := -DEIGEN_DONT_VECTORIZE -DEIGEN_STACK_ALLOCATION_LIMIT=0 \
++                   -DTNX=4 -DTNU=1 -DTNDU=1 -DTNY=1 \
++                   -DPREDICTION_HORIZON=20 -DCONTROL_HORIZON=4 \
++                   -DRSHARC_CARTPOLE_MAX_STEPS=$(CARTPOLE_STEPS)
++CARTPOLE_INCLUDES := -Iexternal/eigen -Iexternal/json -Iexternal/libmpc/include \
++                    -Iexternal/nlopt/src/api -I"$(NLOPT_BUILD)" \
++                    -I"$(BUILD)/include" -Isrc/common -Isrc/cartpole
++CARTPOLE_SOURCES := src/common/controller.cpp src/cartpole/NLMPCController.cpp \
++                   src/cartpole/main.cpp
++CARTPOLE_LDFLAGS := -Wl,--gc-sections -Wl,-Map,"$(CARTPOLE_MAP)"
++CARTPOLE_LIBS := -Wl,--start-group "$(NLOPT_LIB)" -lm -Wl,--end-group
++ifneq ($(PROFILE),x86)
++CARTPOLE_SOURCES += src/baremetal/start.S src/baremetal/runtime.cpp src/baremetal/heap.cpp
++CARTPOLE_DEFINES += -DRSHARC_ENABLE_UNWIND=1
++CARTPOLE_LDFLAGS += $(ARCH_FLAGS) -nostdlib -static \
++                    -Wl,--defsym,RSHARC_STACK_SIZE=0x40000 -Wl,-T,src/baremetal/linker.ld
++CARTPOLE_LIBS := -Wl,--start-group "$(NLOPT_LIB)" \
++                -lstdc++ -lsupc++ -lm -lc -lgcc -Wl,--end-group
++endif
++ifeq ($(PROFILE),verilator)
++CARTPOLE_DEFINES += -DRSHARC_BAREMETAL_DISABLE_CONSOLE -DRSHARC_CARTPOLE_CVA6_CHANNEL
++endif
++CARTPOLE_OBJECTS := $(addprefix $(CARTPOLE_DIR)/obj/,$(addsuffix .o,$(basename $(CARTPOLE_SOURCES))))
++
++.PHONY: cartpole cartpole-x86 cartpole-verilator
++cartpole: $(CARTPOLE_ELF)
++
++cartpole-x86:
++	+$(Q)$(MAKE) PROFILE=x86 cartpole
++
++cartpole-verilator:
++	+$(Q)$(MAKE) PROFILE=verilator cartpole
++
++$(CARTPOLE_CONFIG): $(CONFIG) FORCE
++	$(Q)mkdir -p "$(CARTPOLE_DIR)"
++	$(Q){ cat "$(CONFIG)"; printf '%s\n' 'CARTPOLE_CXXFLAGS=$(CARTPOLE_CXXFLAGS)' 'CARTPOLE_DEFINES=$(CARTPOLE_DEFINES)' 'CARTPOLE_INCLUDES=$(CARTPOLE_INCLUDES)' 'CARTPOLE_LDFLAGS=$(CARTPOLE_LDFLAGS)' 'CARTPOLE_LIBS=$(CARTPOLE_LIBS)'; } > "$@.tmp"
++	$(Q)if cmp -s "$@.tmp" "$@"; then rm -f "$@.tmp"; else mv "$@.tmp" "$@"; fi
++
++$(CARTPOLE_CONFIG_HEADER): src/cartpole/config.json Makefile
++	$(Q)mkdir -p "$(@D)"
++	$(Q)$(PYTHON) -c 'import json,sys; print("#pragma once\nnamespace rsharc_cartpole { inline constexpr char config_json[] = " + json.dumps(sys.stdin.read()) + "; }")' < "$<" > "$@.tmp"
++	$(Q)mv "$@.tmp" "$@"
++
++$(CARTPOLE_OBJECTS): $(CARTPOLE_CONFIG_HEADER) $(CARTPOLE_CONFIG) $(NLOPT_LIB) Makefile
++
++$(CARTPOLE_DIR)/obj/%.o: %.cpp
++	@printf 'CXX %s\n' "$<"
++	$(Q)mkdir -p "$(@D)"
++	$(Q)"$(RV_CXX)" $(CARTPOLE_CXXFLAGS) $(CARTPOLE_DEFINES) $(CARTPOLE_INCLUDES) -MMD -MP -c "$<" -o "$@"
++
++$(CARTPOLE_DIR)/obj/%.o: %.S
++	@printf 'ASM %s\n' "$<"
++	$(Q)mkdir -p "$(@D)"
++	$(Q)"$(RV_CXX)" $(CARTPOLE_CXXFLAGS) $(CARTPOLE_DEFINES) $(CARTPOLE_INCLUDES) -MMD -MP -c "$<" -o "$@"
++
++$(CARTPOLE_ELF): $(CARTPOLE_OBJECTS) $(NLOPT_LIB) $(if $(filter-out x86,$(PROFILE)),src/baremetal/linker.ld,) Makefile
++	@printf 'LINK %s\n' "$@"
++	$(Q)"$(RV_CXX)" $(CARTPOLE_LDFLAGS) $(CARTPOLE_OBJECTS) -o "$@" $(CARTPOLE_LIBS)
++
++-include $(CARTPOLE_OBJECTS:.o=.d)
++
++# Planta Python externa y servicio persistente Cartpole.
++CARTPOLE_RESULTS := $(CARTPOLE_DIR)/results
++CARTPOLE_REFERENCE ?= $(CURDIR)/build/x86/cartpole/$(CARTPOLE_STEPS)/results/capture.json
++
++.PHONY: run-cartpole run-cartpole-x86 run-cartpole-current run-cartpole-verilator
++run-cartpole:
++	+$(Q)$(MAKE) PROFILE=x86 run-cartpole-current
++	+$(Q)$(MAKE) PROFILE=spike run-cartpole-current
++
++run-cartpole-x86:
++	+$(Q)$(MAKE) PROFILE=x86 run-cartpole-current
++
++run-cartpole-verilator:
++	+$(Q)$(MAKE) PROFILE=x86 run-cartpole-current
++	+$(Q)$(MAKE) PROFILE=verilator run-cartpole-current
++
++run-cartpole-current: cartpole
++	$(Q)$(PYTHON) scripts/run_closed_loop.py run --controller cartpole \
++	  --mode "$(PROFILE)" --elf "$(CARTPOLE_ELF)" --steps $(CARTPOLE_STEPS) \
++	  --out "$(CARTPOLE_RESULTS)" --spike "$(SPIKE)" \
++	  --prefix "$(RISCV_PREFIX)" --runner "$(CVA6_RUNNER)" --seed $(SEED) \
++	  --max-cycles $(CARTPOLE_MAX_CYCLES) \
++	  --timeout $(if $(filter verilator,$(PROFILE)),$(CARTPOLE_HOST_TIMEOUT),$(HOST_TIMEOUT)) \
++	  $(if $(filter spike verilator,$(PROFILE)),--reference "$(CARTPOLE_REFERENCE)",)
+--- a/scripts/validate_acc.py
++++ /dev/null
+@@ -1,458 +0,0 @@
+-#!/usr/bin/env python3
+-"""ACC host plant/controller execution and capture comparison; original Python dynamics.
+-
+-Capture ABI and historical tolerances come from R-SHARC/scripts/decode_acc_capture.py.
+-The CVA6 invocation comes from scripts/hector/run_acc_cva6_closed_loop.sh.
+-"""
+-import argparse
+-import hashlib
+-import json
+-import math
+-import platform
+-from importlib.metadata import version
+-import os
+-import re
+-import signal
+-from pathlib import Path
+-import shutil
+-import struct
+-import subprocess
+-import sys
+-import time
+-
+-sys.dont_write_bytecode = True
+-ROOT = Path(__file__).resolve().parents[1]
+-SIZE = 16448
+-LIMITS = {"t_start": 1e-12, "t_end": 1e-12, "x_start": 1e-4,
+-          "x_end": 1e-4, "u_controller": .05, "u_applied_start": .05,
+-          "w_start": 1e-12, "cost": 100., "constraint_error": 2e-4,
+-          "dual_residual": 1e-3, "iterations": 25}
+-DISCRETE = ("k", "controller_status", "solver_status", "is_feasible",
+-            "adaptive_rho_interval")
+-
+-
+-def require(condition, message):
+-    if not condition:
+-        raise ValueError(message)
+-
+-
+-def sha(path):
+-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+-
+-
+-def write_json(path, value):
+-    Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+-
+-
+-def source_hash():
+-    """Bind results to code/dependencies, independently of absolute host paths."""
+-    paths = [ROOT / "Makefile", ROOT / "external/versions.txt", Path(__file__).resolve(),
+-             ROOT / "scripts/cva6_acc_bridge.hpp", ROOT / "requirements.txt"]
+-    for name in ("src/acc", "src/dynamics", "src/common", "src/baremetal", "scripts/patches",
+-                 "external/eigen", "external/json", "external/libmpc/include", "external/osqp"):
+-        paths.extend(p for p in (ROOT / name).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+-    digest = hashlib.sha256()
+-    for path in sorted(paths):
+-        digest.update(str(path.relative_to(ROOT)).encode() + b"\0")
+-        digest.update(bytes.fromhex(sha(path)))
+-    return digest.hexdigest()
+-
+-
+-def decode(path, expected=None):
+-    raw = Path(path).read_bytes()
+-    require(len(raw) == SIZE and raw[:8] == b"RSHACC01", "Invalid capture size/magic")
+-    _, version, stride, count, capacity, complete, peak, heap = struct.unpack_from("<8Q", raw)
+-    require((version, stride, capacity, complete) == (1, 256, 64, 1),
+-            "Incomplete capture or incompatible ABI (baseline requires ABI 1)")
+-    require(1 <= count <= 64 and (expected is None or count == expected), "Wrong step count")
+-    require(peak <= heap / 2, "Bare-metal heap margin check failed")
+-    rows = []
+-    for i in range(count):
+-        data = raw[64 + i * stride:64 + (i + 1) * stride]
+-        q, s, d = struct.unpack("<32Q", data), struct.unpack("<32q", data), struct.unpack("<32d", data)
+-        require(q[0] == i and s[15] in range(5) and q[18] in (0, 1), f"Invalid status/index at {i}")
+-        require(q[22] == 25 and q[17] > 0, f"Invalid rho interval/iterations at {i}")
+-        require(all(math.isfinite(d[j]) for j in (*range(1, 15), 19, 20, 21, 24, 25)),
+-                f"Non-finite numerical field at {i}")
+-        row = {"k": i, "t_start": d[1], "t_end": d[2], "x_start": list(d[3:6]),
+-               "x_end": list(d[6:9]), "u_controller": list(d[9:11]),
+-               "u_applied_start": list(d[11:13]), "w_start": list(d[13:15]),
+-               "controller_status": s[15], "solver_status": s[16], "iterations": q[17],
+-               "is_feasible": bool(q[18]), "cost": d[19], "constraint_error": d[20],
+-               "dual_residual": d[21], "adaptive_rho_interval": q[22],
+-               "rho_updates": q[23], "rho_estimate": d[24], "rho_final": d[25],
+-               "cycles": q[26], "instret": q[27]}
+-        if rows:
+-            require(row["x_start"] == rows[-1]["x_end"] and
+-                    row["u_applied_start"] == rows[-1]["u_controller"] and
+-                    abs(row["t_start"] - rows[-1]["t_end"]) <= 1e-12, f"Broken continuity at {i}")
+-        rows.append(row)
+-    return rows
+-
+-
+-def checked_capture(path, expected=None):
+-    path = Path(path).resolve()
+-    manifest = json.loads(path.with_name("run.json").read_text())
+-    require(manifest["status"] == "PASS", "Run did not finish successfully")
+-    require(sha(path) == manifest["capture_sha256"], "Capture changed since execution")
+-    require(sha(manifest["elf"]) == manifest["elf_sha256"], "ELF changed since execution")
+-    require(source_hash() == manifest["sources_sha256"], "Sources changed: rerun before comparing")
+-    require(sha(manifest["plant"]) == manifest["plant_sha256"], "Host plant changed since execution")
+-    require(manifest["python_environment"] == python_environment(),
+-            "Python/NumPy/SciPy changed since execution")
+-    return decode(path, expected)
+-
+-
+-def reference_rows(path):
+-    if Path(path).suffix != ".json":
+-        return checked_capture(path)
+-    # Explicit historical baseline only; never an implicit dependency on R-SHARC.
+-    result = []
+-    for row in json.loads(Path(path).read_text())["steps"]:
+-        flat = {**row, **row["metadata"]}
+-        flat.setdefault("controller_status", {"SUCCESS": 0, "MAX_ITERATION": 1,
+-                        "INFEASIBLE": 2, "ERROR": 3, "UNKNOWN": 4}[flat["status"]])
+-        flat.setdefault("adaptive_rho_interval", 25)
+-        result.append(flat)
+-    return result
+-
+-
+-def comparison(observed, reference):
+-    require(len(observed) <= len(reference), "Reference is shorter than observed capture")
+-    maxima, failures, exact_differences = {}, [], []
+-    for a, b in zip(observed, reference):
+-        fields = (*DISCRETE, *LIMITS, "rho_updates", "rho_estimate", "rho_final")
+-        for field in dict.fromkeys(fields):
+-            if field not in b:
+-                continue
+-            x, y = a[field], b[field]
+-            xs, ys = (x, y) if isinstance(x, list) else ([x], [y])
+-            require(len(xs) == len(ys), f"Dimension mismatch: {field}")
+-            require(all(math.isfinite(v) for v in (*xs, *ys)), "Non-finite reference value")
+-            exact = all(struct.pack("<d", u) == struct.pack("<d", v)
+-                        if isinstance(u, float) or isinstance(v, float) else u == v
+-                        for u, v in zip(xs, ys))
+-            error = max(abs(u - v) for u, v in zip(xs, ys))
+-            maxima[field] = max(maxima.get(field, 0), error)
+-            if not exact and len(exact_differences) < 20:
+-                exact_differences.append({"k": a["k"], "field": field, "max_abs": error})
+-            if (field in DISCRETE and x != y) or (field in LIMITS and error > LIMITS[field]):
+-                failures.append({"k": a["k"], "field": field, "error": error})
+-    return {"steps": len(observed), "historical_tolerances_pass": not failures,
+-            "all_available_math_fields_exact": not exact_differences,
+-            "limits": LIMITS, "max_abs": maxima, "failures": failures,
+-            "first_exact_differences": exact_differences,
+-            "rho_policy": "Reported in exact comparison; historical tolerances do not bound rho diagnostics",
+-            "excluded": ["cycles", "instret", "heap_peak", "heap_capacity"]}
+-
+-
+-def symbols(elf, prefix):
+-    table = subprocess.check_output([prefix + "-nm", "-S", str(elf)], text=True)
+-    result = {}
+-    for line in table.splitlines():
+-        fields = line.split()
+-        if len(fields) in (3, 4):
+-            result[fields[-1]] = (int(fields[0], 16), int(fields[1], 16) if len(fields) == 4 else 0)
+-    require(result["_start"][0] == 0x80000000, "Unexpected entry point")
+-    address, size = result["rsharc_acc_mailbox"]
+-    require(size == 448 and address % 64 == 0 and
+-            0x80000000 <= address < address + size <= 0x90000000,
+-            "Mailbox lies outside expected RAM or has an incompatible layout")
+-    segments = subprocess.check_output([prefix + "-readelf", "-lW", str(elf)], text=True)
+-    for line in segments.splitlines():
+-        f = line.split()
+-        if f and f[0] == "LOAD":
+-            start, length = int(f[3], 16), int(f[5], 16)
+-            require(0x80000000 <= start < start + length <= 0x90000000, "ELF LOAD outside RAM")
+-    return result
+-
+-
+-def python_environment():
+-    dependencies = {"python": platform.python_version()}
+-    for line in (ROOT / "requirements.txt").read_text().splitlines():
+-        name, expected = line.split("==")
+-        actual = version(name)
+-        require(actual == expected, f"{name} {actual}: install requirements.txt using {sys.executable}")
+-        dependencies[name] = actual
+-    return dependencies
+-
+-
+-def run_plant(args):
+-    """Host loop around the unchanged original ACCDynamics/OdeDynamics."""
+-    import numpy as np
+-    sys.path.insert(0, str(ROOT / "src"))
+-    from dynamics.acc import ACCDynamics
+-
+-    require(1 <= args.steps <= 64, "Invalid plant step count")
+-    config = json.loads((ROOT / "src/acc/config.json").read_text())
+-    dynamics = ACCDynamics(config)
+-    dt = float(config["system_parameters"]["sample_time"])
+-    x = np.array(config["x0"], dtype=float).reshape(3, 1)
+-    applied = np.array(config["u0"], dtype=float).reshape(2, 1)
+-    previous = applied.copy()
+-    capture = bytearray(SIZE)
+-    peak = heap = 0
+-    for k in range(args.steps):
+-        t = k * dt
+-        w = dynamics.get_exogenous_input(t)
+-        request = struct.pack("<i4x8d", k, t, *x[:, 0], *w[:, 0], *previous[:, 0])
+-        sys.stdout.buffer.write(request)
+-        sys.stdout.buffer.flush()
+-        reply = bytearray()
+-        while len(reply) < 256:
+-            part = sys.stdin.buffer.read(256 - len(reply))
+-            require(part, f"Controller EOF at step {k}")
+-            reply.extend(part)
+-        words = struct.unpack("<32Q", reply)
+-        require(words[0] == k, "Controller response sequence mismatch")
+-        require(words[15] in (0, 1) and words[18] == 1, f"MPC failed or infeasible at step {k}")
+-        u = np.array(struct.unpack_from("<2d", reply, 72)).reshape(2, 1)
+-        require(np.isfinite(u).all(), "Non-finite control")
+-        # Preserve sample-time updates: integrate with the previous applied
+-        # control; the newly computed command is applied next interval.
+-        tf, xf = dynamics.evolve_state(t, x, applied, w, t + dt)
+-        require(np.isfinite(xf).all(), "Non-finite plant state")
+-        struct.pack_into("<Q14d", reply, 0, k, t, tf,
+-                         *x[:, 0], *xf[:, 0], *u[:, 0], *applied[:, 0], *w[:, 0])
+-        peak, heap = words[28:30]
+-        reply[224:256] = bytes(32)  # Reserved capture slots remain zero.
+-        capture[64 + k * 256:64 + (k + 1) * 256] = reply
+-        print(f"ACC_PLANT_STEP k={k} t={tf:.17g} x={xf[:, 0].tolist()} u={u[:, 0].tolist()}",
+-              file=sys.stderr, flush=True)
+-        x, applied, previous = xf, u.copy(), u.copy()
+-    struct.pack_into("<8Q", capture, 0, int.from_bytes(b"RSHACC01", "little"),
+-                     1, 256, args.steps, 64, 1, peak, heap)
+-    (args.out / "capture.bin").write_bytes(capture)
+-
+-
+-def execute_pair(command, args, environment, out, manifest):
+-    """Two persistent processes, two anonymous pipes; no sockets or daemons."""
+-    request_read, request_write = os.pipe()
+-    reply_read, reply_write = os.pipe()
+-    descriptors = [request_read, request_write, reply_read, reply_write]
+-    processes = []
+-    started = time.monotonic()
+-    try:
+-        with (out / "plant.log").open("w") as plant_log, (out / "console.log").open("w") as log:
+-            host = subprocess.Popen(manifest["plant_command"], stdin=reply_read,
+-                                    stdout=request_write, stderr=plant_log,
+-                                    env=environment, cwd=out, start_new_session=True)
+-            processes.append(host)
+-            if args.mode == "verilator":
+-                environment.update(ACC_REQUEST_FD=str(request_read), ACC_RESPONSE_FD=str(reply_write))
+-                service = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+-                                           pass_fds=(request_read, reply_write), env=environment,
+-                                           cwd=out, start_new_session=True)
+-            else:
+-                service = subprocess.Popen(command, stdin=request_read, stdout=reply_write, stderr=log,
+-                                           env=environment, cwd=out, start_new_session=True)
+-            processes.append(service)
+-            for fd in descriptors: os.close(fd)
+-            descriptors.clear()
+-            while any(p.poll() is None for p in processes):
+-                require(all(p.poll() in (None, 0) for p in processes),
+-                        "Plant/controller failed: see plant.log and console.log")
+-                require(time.monotonic() - started < args.timeout, "Plant/controller wall timeout")
+-                time.sleep(.05)
+-            manifest.update(returncode=service.returncode, plant_returncode=host.returncode)
+-            require(host.returncode == service.returncode == 0,
+-                    "Plant/controller failed: see plant.log and console.log")
+-    finally:
+-        for fd in descriptors: os.close(fd)
+-        for process in processes:
+-            if process.poll() is None:
+-                os.killpg(process.pid, signal.SIGKILL)
+-            process.wait()
+-
+-
+-def prepare_runner(args):
+-    """Recompile the C++ testbench around the existing generated RTL model."""
+-    source, build, out = args.source.resolve(), args.runner_build.resolve(), args.out.resolve()
+-    require(out.is_relative_to(ROOT / "build"), "Runner output must be inside build/")
+-    require(not out.exists(), "Runner output exists; use another --out or remove that generated directory")
+-    text = source.read_text()
+-    # Refuse unknown testbench shapes instead of applying an approximate patch.
+-    require("#define MEM " in text and "0x80000000" in text,
+-            "Unsupported SRAM mapping in CVA6 testbench")
+-    anchors = {
+-        '#include <stdio.h>': '#include "cva6_acc_bridge.hpp"\n#include <stdio.h>',
+-        '  while ((ignore_dtm_done || !dtm->done()) &&':
+-            '  ACCBridge acc_bridge(reinterpret_cast<unsigned char*>(MEM), sizeof(MEM));\n'
+-            '  while ((ignore_dtm_done || !dtm->done()) &&',
+-        '    main_time++;\n    if (main_time % progress_interval':
+-            '    main_time++;\n'
+-            '    try { acc_bridge.tick(); }\n'
+-            '    catch (const std::exception& error) {\n'
+-            '      std::cerr << "ACC_CHANNEL_ERROR: " << error.what() << "\\n";\n'
+-            '      return 90;\n'
+-            '    }\n    if (main_time % progress_interval',
+-    }
+-    for old, new in anchors.items():
+-        require(text.count(old) == 1, "Unsupported testbench anchor: " + old)
+-        text = text.replace(old, new)
+-    original = (build / "Variane_testharness.mk").read_text()
+-    pattern = r"^ariane_tb\.o: .+$"
+-    require(len(re.findall(pattern, original, re.M)) == 1, "Unsupported generated makefile")
+-    require((build / "Variane_testharness").is_file(), "Missing original runner")
+-    require(not build.is_relative_to(out), "Runner destination contains source build")
+-    shutil.copytree(build, out, symlinks=True)
+-    patched = out / "ariane_tb_acc.cpp"
+-    patched.write_text(text)
+-    for name in ("acc_channel.hpp", "ACC_Step_Types.h", "acc_capture.hpp"):
+-        shutil.copy2(ROOT / "src/acc" / name, out / name)
+-    shutil.copy2(ROOT / "scripts/cva6_acc_bridge.hpp", out / "cva6_acc_bridge.hpp")
+-    # Existing dump-enabled testbenches may include this header as well.
+-    for header in source.parent.glob("*.hpp"):
+-        if not (out / header.name).exists(): shutil.copy2(header, out / header.name)
+-    modified = re.sub(pattern, "ariane_tb.o: " + str(patched), original, flags=re.M)
+-    modified = modified.replace("-std=c++17", "-std=c++20")
+-    (out / "Variane_testharness.mk").write_text(modified)
+-    (out / "ariane_tb.o").unlink(missing_ok=True)
+-    (out / "ariane_tb.d").unlink(missing_ok=True)
+-    command = ["make", "-C", str(out), "-f", "Variane_testharness.mk",
+-               "Variane_testharness", "OBJCACHE=", "OPT_FAST=-O3", "-j2"]
+-    subprocess.run(command, check=True)
+-    write_json(out / "acc-channel-provenance.json", {
+-        "testbench": str(source), "testbench_sha256": sha(source),
+-        "original_runner": str(build / "Variane_testharness"),
+-        "original_runner_sha256": sha(build / "Variane_testharness"),
+-        "runner_sha256": sha(out / "Variane_testharness"),
+-        "bridge_sha256": sha(ROOT / "scripts/cva6_acc_bridge.hpp"),
+-        "channel_sha256": sha(ROOT / "src/acc/acc_channel.hpp"), "command": command,
+-        "rtl_changed": False, "cache_contract": "CVA6 CSR 0x7c1 bypass during exchange only"})
+-    print("CVA6_RUNNER=" + str(out / "Variane_testharness"))
+-
+-
+-def run(args):
+-    elf, out = args.elf.resolve(), args.out.resolve()
+-    plant = ROOT / "src/dynamics/acc.py"
+-    dependencies = python_environment()
+-    require(out.is_relative_to(ROOT / "build"), "Execution output must be inside build/")
+-    require(1 <= args.steps <= 64 and args.timeout > 0, "Invalid steps/timeout")
+-    out.mkdir(parents=True, exist_ok=True)
+-    capture = out / "capture.bin"
+-    capture.unlink(missing_ok=True)
+-    (out / "comparison.json").unlink(missing_ok=True)
+-    manifest = {"status": "RUNNING", "mode": args.mode, "steps": args.steps,
+-                "elf": str(elf), "elf_sha256": sha(elf), "sources_sha256": source_hash(),
+-                "plant": str(plant), "plant_sha256": sha(plant),
+-                "python_environment": dependencies,
+-                "integrator": "original OdeDynamics.evolve_state / scipy.integrate.solve_ivp defaults",
+-                "architecture": "host plant + persistent controller service",
+-                "build_config": (elf.parent / "build-config.txt").read_text(),
+-                "target_counters_available": args.mode != "x86", "heap_available": args.mode != "x86"}
+-    write_json(out / "run.json", manifest)
+-    print("RESULT_DIR=" + str(out), flush=True)
+-    started = time.monotonic()
+-    try:
+-        environment = os.environ.copy()
+-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+-        if args.mode == "x86":
+-            command = [str(elf)]
+-        elif args.mode == "spike":
+-            require(shutil.which(args.spike), "Spike executable not found")
+-            command = [args.spike, "--isa=RV64GC", "--priv=m",
+-                       "-m0x80000000:0x10000000", str(elf)]
+-        else:
+-            require(args.runner, "Set CVA6_RUNNER to an ACC channel runner")
+-            runner = shutil.which(args.runner)
+-            require(runner is not None, "CVA6 runner not found/executable")
+-            require(b"RSHARC_ACC_CHANNEL_V1" in Path(runner).read_bytes(),
+-                    "Dump-only runner: run make prepare-acc-runner first")
+-            provenance = json.loads(Path(runner).with_name("acc-channel-provenance.json").read_text())
+-            require(provenance["runner_sha256"] == sha(runner) and
+-                    provenance["bridge_sha256"] == sha(ROOT / "scripts/cva6_acc_bridge.hpp") and
+-                    provenance["channel_sha256"] == sha(ROOT / "src/acc/acc_channel.hpp"),
+-                    "Runner/channel changed: regenerate the ACC runner")
+-            require(1 <= args.max_cycles <= 4294967294 and 0 <= args.seed <= 4294967295,
+-                    "Runner cycle/seed parameters outside supported range")
+-            syms = symbols(elf, args.prefix)
+-            address, size = syms["rsharc_acc_mailbox"]
+-            environment["ACC_MAILBOX_ADDRESS"] = hex(address)
+-            command = [runner, f"--max-cycles={args.max_cycles}",
+-                       f"--seed={args.seed}", str(elf),
+-                       "+debug_disable=1", "+jtag_rbb_enable=0", "+trace_disable=1",
+-                       "+progress_interval=5000000", f"+time_out={args.max_cycles}",
+-                       f"+ntb_random_seed={args.seed}", "++" + str(elf), "+elf_file=" + str(elf),
+-                       "+core_name=cv64a6_imafdc_sv39", f"+tohost_addr={syms['tohost'][0]:016x}"]
+-            manifest.update(runner=str(Path(runner).resolve()), runner_sha256=sha(runner),
+-                            max_cycles=args.max_cycles, seed=args.seed,
+-                            runner_libraries=subprocess.check_output(["ldd", runner], text=True))
+-        manifest.update(command=command, plant_command=[sys.executable, "-B",
+-            str(Path(__file__).resolve()), "plant", "--steps", str(args.steps), "--out", str(out)])
+-        write_json(out / "run.json", manifest)
+-        execute_pair(command, args, environment, out, manifest)
+-        if args.mode == "verilator":
+-            log_text = (out / "console.log").read_text()
+-            require("RSHARC_ACC_CHANNEL_V1" in log_text and
+-                    "*** SUCCESS *** (tohost = 0)" in log_text,
+-                    "Runner did not confirm channel activation and successful termination")
+-        rows = decode(capture, args.steps)
+-        if args.mode != "x86":
+-            require(all(r["cycles"] > 0 and r["instret"] > 0 for r in rows), "Missing RV64 counters")
+-        write_json(out / "runtime_result.json", {"steps": rows})
+-        manifest.update(status="PASS", capture_sha256=sha(capture))
+-        if args.reference:
+-            check = comparison(rows, reference_rows(args.reference))
+-            write_json(out / "comparison.json", check)
+-            manifest.update(reference=str(args.reference.resolve()), reference_sha256=sha(args.reference))
+-            require(check["historical_tolerances_pass"], "Numerical comparison failed: see comparison.json")
+-            print("HISTORICAL_TOLERANCES=PASS", flush=True)
+-            print("MATH_EXACT=" + str(check["all_available_math_fields_exact"]), flush=True)
+-        print(f"ACC_{args.mode.upper()}_STEPS={len(rows)} PASS", flush=True)
+-    except BaseException as error:
+-        manifest.update(status="FAIL", error=str(error))
+-        raise
+-    finally:
+-        manifest["host_seconds"] = time.monotonic() - started
+-        write_json(out / "run.json", manifest)
+-
+-
+-def main():
+-    parser = argparse.ArgumentParser(description=__doc__)
+-    sub = parser.add_subparsers(dest="action", required=True)
+-    execute = sub.add_parser("run")
+-    execute.add_argument("--mode", choices=("x86", "verilator", "spike"), required=True)
+-    execute.add_argument("--elf", type=Path, required=True)
+-    execute.add_argument("--out", type=Path, required=True)
+-    execute.add_argument("--spike", default="spike")
+-    execute.add_argument("--steps", type=int, default=64)
+-    execute.add_argument("--prefix", default="riscv64-unknown-elf")
+-    execute.add_argument("--runner", default="")
+-    execute.add_argument("--max-cycles", type=int, default=4000000000)
+-    execute.add_argument("--timeout", type=int, default=86400)
+-    execute.add_argument("--seed", type=int, default=475092611)
+-    execute.add_argument("--reference", type=Path)
+-    compare = sub.add_parser("compare")
+-    compare.add_argument("--observed", type=Path, required=True)
+-    compare.add_argument("--reference", type=Path, required=True)
+-    compare.add_argument("--steps", type=int, default=64)
+-    compare.add_argument("--exact", action="store_true")
+-    prepare = sub.add_parser("prepare-runner")
+-    prepare.add_argument("--source", type=Path, required=True)
+-    prepare.add_argument("--runner-build", type=Path, required=True)
+-    prepare.add_argument("--out", type=Path, required=True)
+-    plant = sub.add_parser("plant")
+-    plant.add_argument("--steps", type=int, required=True)
+-    plant.add_argument("--out", type=Path, required=True)
+-    args = parser.parse_args()
+-    if args.action == "run":
+-        run(args)
+-    elif args.action == "plant":
+-        run_plant(args)
+-    elif args.action == "prepare-runner":
+-        prepare_runner(args)
+-    else:
+-        check = comparison(checked_capture(args.observed, args.steps), reference_rows(args.reference))
+-        check.update(observed_sha256=sha(args.observed), reference_sha256=sha(args.reference))
+-        write_json(args.observed.with_name("comparison.json"), check)
+-        print(json.dumps(check, indent=2))
+-        require(check["historical_tolerances_pass"], "Historical tolerance comparison failed")
+-        require(not args.exact or check["all_available_math_fields_exact"], "Exact comparison failed")
+-
+-
+-if __name__ == "__main__":
+-    try:
+-        main()
+-    except (ValueError, OSError, KeyError, ImportError, subprocess.SubprocessError) as error:
+-        sys.exit("ACC_VALIDATION_ERROR: " + str(error))
+--- /dev/null
++++ b/scripts/run_closed_loop.py
+@@ -0,0 +1,607 @@
++#!/usr/bin/env python3
++"""ACC and Cartpole closed-loop execution with the original Python plants.
++
++Capture ABI and historical tolerances come from R-SHARC/scripts/decode_acc_capture.py.
++The CVA6 invocation comes from scripts/hector/run_acc_cva6_closed_loop.sh.
++"""
++import argparse
++import hashlib
++import json
++import math
++import platform
++from importlib.metadata import version
++import os
++import re
++import signal
++from pathlib import Path
++import shutil
++import struct
++import subprocess
++import sys
++import time
++
++sys.dont_write_bytecode = True
++ROOT = Path(__file__).resolve().parents[1]
++SIZE = 16448
++LIMITS = {"t_start": 1e-12, "t_end": 1e-12, "x_start": 1e-4,
++          "x_end": 1e-4, "u_controller": .05, "u_applied_start": .05,
++          "w_start": 1e-12, "cost": 100., "constraint_error": 2e-4,
++          "dual_residual": 1e-3, "iterations": 25}
++DISCRETE = ("k", "controller_status", "solver_status", "is_feasible",
++            "adaptive_rho_interval")
++
++
++def require(condition, message):
++    if not condition:
++        raise ValueError(message)
++
++
++def sha(path):
++    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
++
++
++def write_json(path, value):
++    Path(path).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
++
++
++def source_hash(controller="acc"):
++    """Bind results to code/dependencies, independently of absolute host paths."""
++    paths = [ROOT / "Makefile", ROOT / "external/versions.txt", Path(__file__).resolve(),
++             ROOT / "scripts/cva6_bridge.hpp", ROOT / "requirements.txt"]
++    solver = "external/nlopt" if controller == "cartpole" else "external/osqp"
++    for name in ("src/" + controller, "src/dynamics", "src/common", "src/baremetal", "scripts/patches",
++                 "external/eigen", "external/json", "external/libmpc/include", solver):
++        paths.extend(p for p in (ROOT / name).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
++    digest = hashlib.sha256()
++    for path in sorted(paths):
++        digest.update(str(path.relative_to(ROOT)).encode() + b"\0")
++        digest.update(bytes.fromhex(sha(path)))
++    return digest.hexdigest()
++
++
++def decode(path, expected=None):
++    raw = Path(path).read_bytes()
++    require(len(raw) == SIZE and raw[:8] == b"RSHACC01", "Invalid capture size/magic")
++    _, version, stride, count, capacity, complete, peak, heap = struct.unpack_from("<8Q", raw)
++    require((version, stride, capacity, complete) == (1, 256, 64, 1),
++            "Incomplete capture or incompatible ABI (baseline requires ABI 1)")
++    require(1 <= count <= 64 and (expected is None or count == expected), "Wrong step count")
++    require(peak <= heap / 2, "Bare-metal heap margin check failed")
++    rows = []
++    for i in range(count):
++        data = raw[64 + i * stride:64 + (i + 1) * stride]
++        q, s, d = struct.unpack("<32Q", data), struct.unpack("<32q", data), struct.unpack("<32d", data)
++        require(q[0] == i and s[15] in range(5) and q[18] in (0, 1), f"Invalid status/index at {i}")
++        require(q[22] == 25 and q[17] > 0, f"Invalid rho interval/iterations at {i}")
++        require(all(math.isfinite(d[j]) for j in (*range(1, 15), 19, 20, 21, 24, 25)),
++                f"Non-finite numerical field at {i}")
++        row = {"k": i, "t_start": d[1], "t_end": d[2], "x_start": list(d[3:6]),
++               "x_end": list(d[6:9]), "u_controller": list(d[9:11]),
++               "u_applied_start": list(d[11:13]), "w_start": list(d[13:15]),
++               "controller_status": s[15], "solver_status": s[16], "iterations": q[17],
++               "is_feasible": bool(q[18]), "cost": d[19], "constraint_error": d[20],
++               "dual_residual": d[21], "adaptive_rho_interval": q[22],
++               "rho_updates": q[23], "rho_estimate": d[24], "rho_final": d[25],
++               "cycles": q[26], "instret": q[27]}
++        if rows:
++            require(row["x_start"] == rows[-1]["x_end"] and
++                    row["u_applied_start"] == rows[-1]["u_controller"] and
++                    abs(row["t_start"] - rows[-1]["t_end"]) <= 1e-12, f"Broken continuity at {i}")
++        rows.append(row)
++    return rows
++
++
++def checked_capture(path, expected=None, controller="acc"):
++    path = Path(path).resolve()
++    manifest = json.loads(path.with_name("run.json").read_text())
++    require(manifest["status"] == "PASS", "Run did not finish successfully")
++    require(sha(path) == manifest["capture_sha256"], "Capture changed since execution")
++    require(sha(manifest["elf"]) == manifest["elf_sha256"], "ELF changed since execution")
++    require(manifest.get("controller", "acc") == controller, "Wrong controller reference")
++    require(source_hash(controller) == manifest["sources_sha256"], "Sources changed: rerun before comparing")
++    require(sha(manifest["plant"]) == manifest["plant_sha256"], "Host plant changed since execution")
++    require(manifest["python_environment"] == python_environment(),
++            "Python/NumPy/SciPy changed since execution")
++    return decode_cartpole(path, expected) if controller == "cartpole" else decode(path, expected)
++
++
++def reference_rows(path):
++    if Path(path).suffix != ".json":
++        return checked_capture(path)
++    # Explicit historical baseline only; never an implicit dependency on R-SHARC.
++    result = []
++    for row in json.loads(Path(path).read_text())["steps"]:
++        flat = {**row, **row["metadata"]}
++        flat.setdefault("controller_status", {"SUCCESS": 0, "MAX_ITERATION": 1,
++                        "INFEASIBLE": 2, "ERROR": 3, "UNKNOWN": 4}[flat["status"]])
++        flat.setdefault("adaptive_rho_interval", 25)
++        result.append(flat)
++    return result
++
++
++def comparison(observed, reference):
++    require(len(observed) <= len(reference), "Reference is shorter than observed capture")
++    maxima, failures, exact_differences = {}, [], []
++    for a, b in zip(observed, reference):
++        fields = (*DISCRETE, *LIMITS, "rho_updates", "rho_estimate", "rho_final")
++        for field in dict.fromkeys(fields):
++            if field not in b:
++                continue
++            x, y = a[field], b[field]
++            xs, ys = (x, y) if isinstance(x, list) else ([x], [y])
++            require(len(xs) == len(ys), f"Dimension mismatch: {field}")
++            require(all(math.isfinite(v) for v in (*xs, *ys)), "Non-finite reference value")
++            exact = all(struct.pack("<d", u) == struct.pack("<d", v)
++                        if isinstance(u, float) or isinstance(v, float) else u == v
++                        for u, v in zip(xs, ys))
++            error = max(abs(u - v) for u, v in zip(xs, ys))
++            maxima[field] = max(maxima.get(field, 0), error)
++            if not exact and len(exact_differences) < 20:
++                exact_differences.append({"k": a["k"], "field": field, "max_abs": error})
++            if (field in DISCRETE and x != y) or (field in LIMITS and error > LIMITS[field]):
++                failures.append({"k": a["k"], "field": field, "error": error})
++    return {"steps": len(observed), "historical_tolerances_pass": not failures,
++            "all_available_math_fields_exact": not exact_differences,
++            "limits": LIMITS, "max_abs": maxima, "failures": failures,
++            "first_exact_differences": exact_differences,
++            "rho_policy": "Reported in exact comparison; historical tolerances do not bound rho diagnostics",
++            "excluded": ["cycles", "instret", "heap_peak", "heap_capacity"]}
++
++
++def symbols(elf, prefix, controller="acc"):
++    table = subprocess.check_output([prefix + "-nm", "-S", str(elf)], text=True)
++    result = {}
++    for line in table.splitlines():
++        fields = line.split()
++        if len(fields) in (3, 4):
++            result[fields[-1]] = (int(fields[0], 16), int(fields[1], 16) if len(fields) == 4 else 0)
++    require(result["_start"][0] == 0x80000000, "Unexpected entry point")
++    address, size = result["rsharc_" + controller + "_mailbox"]
++    require(size == (256 if controller == "cartpole" else 448) and address % 64 == 0 and
++            0x80000000 <= address < address + size <= 0x90000000,
++            "Mailbox lies outside expected RAM or has an incompatible layout")
++    segments = subprocess.check_output([prefix + "-readelf", "-lW", str(elf)], text=True)
++    for line in segments.splitlines():
++        f = line.split()
++        if f and f[0] == "LOAD":
++            start, length = int(f[3], 16), int(f[5], 16)
++            require(0x80000000 <= start < start + length <= 0x90000000, "ELF LOAD outside RAM")
++    return result
++
++
++def python_environment():
++    dependencies = {"python": platform.python_version()}
++    for line in (ROOT / "requirements.txt").read_text().splitlines():
++        name, expected = line.split("==")
++        actual = version(name)
++        require(actual == expected, f"{name} {actual}: install requirements.txt using {sys.executable}")
++        dependencies[name] = actual
++    return dependencies
++
++
++def run_plant(args):
++    """Host loop around the unchanged original ACCDynamics/OdeDynamics."""
++    import numpy as np
++    sys.path.insert(0, str(ROOT / "src"))
++    from dynamics.acc import ACCDynamics
++
++    require(1 <= args.steps <= 64, "Invalid plant step count")
++    config = json.loads((ROOT / "src/acc/config.json").read_text())
++    dynamics = ACCDynamics(config)
++    dt = float(config["system_parameters"]["sample_time"])
++    x = np.array(config["x0"], dtype=float).reshape(3, 1)
++    applied = np.array(config["u0"], dtype=float).reshape(2, 1)
++    previous = applied.copy()
++    capture = bytearray(SIZE)
++    peak = heap = 0
++    for k in range(args.steps):
++        t = k * dt
++        w = dynamics.get_exogenous_input(t)
++        request = struct.pack("<i4x8d", k, t, *x[:, 0], *w[:, 0], *previous[:, 0])
++        sys.stdout.buffer.write(request)
++        sys.stdout.buffer.flush()
++        reply = bytearray()
++        while len(reply) < 256:
++            part = sys.stdin.buffer.read(256 - len(reply))
++            require(part, f"Controller EOF at step {k}")
++            reply.extend(part)
++        words = struct.unpack("<32Q", reply)
++        require(words[0] == k, "Controller response sequence mismatch")
++        require(words[15] in (0, 1) and words[18] == 1, f"MPC failed or infeasible at step {k}")
++        u = np.array(struct.unpack_from("<2d", reply, 72)).reshape(2, 1)
++        require(np.isfinite(u).all(), "Non-finite control")
++        # Preserve sample-time updates: integrate with the previous applied
++        # control; the newly computed command is applied next interval.
++        tf, xf = dynamics.evolve_state(t, x, applied, w, t + dt)
++        require(np.isfinite(xf).all(), "Non-finite plant state")
++        struct.pack_into("<Q14d", reply, 0, k, t, tf,
++                         *x[:, 0], *xf[:, 0], *u[:, 0], *applied[:, 0], *w[:, 0])
++        peak, heap = words[28:30]
++        reply[224:256] = bytes(32)  # Reserved capture slots remain zero.
++        capture[64 + k * 256:64 + (k + 1) * 256] = reply
++        print(f"ACC_PLANT_STEP k={k} t={tf:.17g} x={xf[:, 0].tolist()} u={u[:, 0].tolist()}",
++              file=sys.stderr, flush=True)
++        x, applied, previous = xf, u.copy(), u.copy()
++    struct.pack_into("<8Q", capture, 0, int.from_bytes(b"RSHACC01", "little"),
++                     1, 256, args.steps, 64, 1, peak, heap)
++    (args.out / "capture.bin").write_bytes(capture)
++
++
++
++def decode_cartpole(path, expected=None):
++    capture = json.loads(Path(path).read_text())
++    require(capture["schema"] == 1 and capture["controller"] == "cartpole" and capture["complete"] is True,
++            "Incomplete or incompatible Cartpole capture")
++    rows = capture["steps"]
++    require(1 <= len(rows) <= 64 and (expected is None or len(rows) == expected), "Wrong step count")
++    for k, row in enumerate(rows):
++        require(row["k"] == k and type(row["solver_status"]) is int and
++                type(row["is_feasible"]) is bool and type(row["cost_available"]) is bool,
++                f"Invalid Cartpole status/index at {k}")
++        for name, length in (("x_start", 4), ("x_end", 4), ("u_controller", 1),
++                             ("u_applied_start", 1), ("w_start", 1)):
++            require(len(row[name]) == length and all(math.isfinite(v) for v in row[name]),
++                    f"Invalid {name} at {k}")
++        require(math.isfinite(row["t_start"]) and math.isfinite(row["t_end"]) and
++                row["t_end"] > row["t_start"], f"Invalid time at {k}")
++        require((row["cost_available"] and row["cost"] is not None and math.isfinite(row["cost"])) or
++                (not row["cost_available"] and row["cost"] is None), f"Invalid cost at {k}")
++        require(0 <= row["heap_peak"] <= row["heap_capacity"] / 2, f"Heap margin failed at {k}")
++        if k:
++            require(row["x_start"] == rows[k-1]["x_end"] and
++                    row["u_applied_start"] == rows[k-1]["u_controller"] and
++                    abs(row["t_start"] - rows[k-1]["t_end"]) <= 1e-12, f"Broken continuity at {k}")
++    return rows
++
++
++def comparison_cartpole(observed, reference):
++    require(len(observed) <= len(reference), "Reference is shorter than observed capture")
++    fields = ("k", "t_start", "t_end", "x_start", "x_end", "u_controller", "u_applied_start",
++              "w_start", "solver_status", "is_feasible", "cost_available", "cost")
++    differences, maxima = [], {}
++    for a, b in zip(observed, reference):
++        for field in fields:
++            xs = a[field] if isinstance(a[field], list) else [a[field]]
++            ys = b[field] if isinstance(b[field], list) else [b[field]]
++            require(len(xs) == len(ys), "Reference dimension mismatch: " + field)
++            exact = True
++            for x, y in zip(xs, ys):
++                if x is None or y is None:
++                    exact &= x is y
++                elif isinstance(x, float) or isinstance(y, float):
++                    exact &= struct.pack("<d", x) == struct.pack("<d", y)
++                    maxima[field] = max(maxima.get(field, 0.0), abs(x - y))
++                else:
++                    exact &= x == y
++            if not exact:
++                differences.append({"k": a["k"], "field": field})
++    return {"steps": len(observed), "all_available_math_fields_exact": not differences,
++            "max_abs": maxima, "difference_count": len(differences),
++            "first_exact_differences": differences[:20],
++            "excluded": ["cycles", "instret", "heap_peak", "heap_capacity"]}
++
++
++def run_cartpole_plant(args):
++    import numpy as np
++    sys.path.insert(0, str(ROOT / "src"))
++    from dynamics.cartpole import CartPoleDynamics
++
++    require(1 <= args.steps <= 64, "Invalid plant step count")
++    config = json.loads((ROOT / "src/cartpole/config.json").read_text())
++    dynamics = CartPoleDynamics(config)
++    dt = float(config["system_parameters"]["sample_time"])
++    require(dt > 0 and math.isfinite(dt), "Invalid sample period")
++    x = np.array(config["x0"], dtype=float).reshape(4, 1)
++    applied = np.array(config["u0"], dtype=float).reshape(1, 1)
++    previous = applied.copy()
++    rows = []
++    for k in range(args.steps):
++        t = k * dt
++        w = dynamics.get_exogenous_input(t)
++        request = struct.pack("<Q7d", k, t, *x[:, 0], *w[:, 0], *previous[:, 0])
++        sys.stdout.buffer.write(request)
++        sys.stdout.buffer.flush()
++        reply = bytearray()
++        while len(reply) < 80:
++            part = sys.stdin.buffer.read(80 - len(reply))
++            require(part, f"Controller EOF at step {k}")
++            reply.extend(part)
++        index, status, feasible, cost_available, force, cost, cycles, instret, peak, heap = struct.unpack(
++            "<QqQQddQQQQ", reply)
++        require(index == k and feasible in (0, 1) and cost_available in (0, 1), "Invalid controller reply")
++        require(math.isfinite(force) and (not cost_available or math.isfinite(cost)), "Non-finite MPC result")
++        u = np.array([[force]])
++        # Same sample-time calendar as ACC: use the previous control for this
++        # interval and apply the newly computed command at the next sample.
++        tf, xf = dynamics.evolve_state(t, x, applied, w, t + dt)
++        require(abs(tf - (t + dt)) <= 1e-12 and np.isfinite(xf).all(), "Plant integration failed")
++        rows.append({"k": k, "t_start": t, "t_end": tf, "x_start": x[:, 0].tolist(),
++                     "x_end": xf[:, 0].tolist(), "u_controller": [force],
++                     "u_applied_start": applied[:, 0].tolist(), "w_start": w[:, 0].tolist(),
++                     "solver_status": status, "is_feasible": bool(feasible),
++                     "cost_available": bool(cost_available), "cost": cost if cost_available else None,
++                     "cycles": cycles, "instret": instret, "heap_peak": peak, "heap_capacity": heap})
++        print(f"CARTPOLE_PLANT_STEP k={k} t={tf:.17g} x={xf[:, 0].tolist()} u={force:.17g} status={status}",
++              file=sys.stderr, flush=True)
++        x, applied, previous = xf, u.copy(), u.copy()
++    write_json(args.out / "capture.json", {"schema": 1, "controller": "cartpole",
++               "complete": True, "steps": rows})
++
++
++def execute_pair(command, args, environment, out, manifest):
++    """Two persistent processes, two anonymous pipes; no sockets or daemons."""
++    request_read, request_write = os.pipe()
++    reply_read, reply_write = os.pipe()
++    descriptors = [request_read, request_write, reply_read, reply_write]
++    processes = []
++    started = time.monotonic()
++    try:
++        with (out / "plant.log").open("w") as plant_log, (out / "console.log").open("w") as log:
++            host = subprocess.Popen(manifest["plant_command"], stdin=reply_read,
++                                    stdout=request_write, stderr=plant_log,
++                                    env=environment, cwd=out, start_new_session=True)
++            processes.append(host)
++            if args.mode == "verilator":
++                environment.update(MPC_REQUEST_FD=str(request_read), MPC_RESPONSE_FD=str(reply_write))
++                service = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
++                                           pass_fds=(request_read, reply_write), env=environment,
++                                           cwd=out, start_new_session=True)
++            else:
++                service = subprocess.Popen(command, stdin=request_read, stdout=reply_write, stderr=log,
++                                           env=environment, cwd=out, start_new_session=True)
++            processes.append(service)
++            for fd in descriptors: os.close(fd)
++            descriptors.clear()
++            while any(p.poll() is None for p in processes):
++                require(all(p.poll() in (None, 0) for p in processes),
++                        "Plant/controller failed: see plant.log and console.log")
++                require(time.monotonic() - started < args.timeout, "Plant/controller wall timeout")
++                time.sleep(.05)
++            manifest.update(returncode=service.returncode, plant_returncode=host.returncode)
++            require(host.returncode == service.returncode == 0,
++                    "Plant/controller failed: see plant.log and console.log")
++    finally:
++        for fd in descriptors: os.close(fd)
++        for process in processes:
++            if process.poll() is None:
++                os.killpg(process.pid, signal.SIGKILL)
++            process.wait()
++
++
++def channel_hashes():
++    return {name: sha(ROOT / "src" / name) for name in (
++        "acc/acc_channel.hpp", "acc/ACC_Step_Types.h", "acc/acc_capture.hpp",
++        "cartpole/cartpole_channel.hpp")}
++
++
++def prepare_runner(args):
++    """Recompile the C++ testbench around the existing generated RTL model."""
++    source, build, out = args.source.resolve(), args.runner_build.resolve(), args.out.resolve()
++    require(out.is_relative_to(ROOT / "build"), "Runner output must be inside build/")
++    require(not out.exists(), "Runner output exists; use another --out or remove that generated directory")
++    text = source.read_text()
++    # Refuse unknown testbench shapes instead of applying an approximate patch.
++    require("#define MEM " in text and "0x80000000" in text,
++            "Unsupported SRAM mapping in CVA6 testbench")
++    anchors = {
++        '#include <stdio.h>': '#include "cva6_bridge.hpp"\n#include <stdio.h>',
++        '  while ((ignore_dtm_done || !dtm->done()) &&':
++            '  MPCBridge mpc_bridge(reinterpret_cast<unsigned char*>(MEM), sizeof(MEM));\n'
++            '  while ((ignore_dtm_done || !dtm->done()) &&',
++        '    main_time++;\n    if (main_time % progress_interval':
++            '    main_time++;\n'
++            '    try { mpc_bridge.tick(); }\n'
++            '    catch (const std::exception& error) {\n'
++            '      std::cerr << "MPC_CHANNEL_ERROR: " << error.what() << "\\n";\n'
++            '      return 90;\n'
++            '    }\n    if (main_time % progress_interval',
++    }
++    for old, new in anchors.items():
++        require(text.count(old) == 1, "Unsupported testbench anchor: " + old)
++        text = text.replace(old, new)
++    # atoll parses a signed 64-bit limit. Accept larger budgets only when both
++    # host and generated RTL timeout counters have verified 64-bit storage.
++    generated = (build / "Variane_testharness___024root.h").read_text()
++    wide_counters = ("uint64_t max_cycles =" in text and "vluint64_t main_time =" in text and
++                     "max_cycles = atoll(optarg)" in text and
++                     all(re.search(r"QData/\*63:0\*/\s+\w+__DOT__i_rvfi_tracer__DOT__" +
++                                   field + r";", generated) for field in ("cycles", "SIM_FINISH")))
++    max_cycles_limit = (2**63 - 2) if wide_counters else (2**32 - 2)
++    original = (build / "Variane_testharness.mk").read_text()
++    pattern = r"^ariane_tb\.o: .+$"
++    require(len(re.findall(pattern, original, re.M)) == 1, "Unsupported generated makefile")
++    require((build / "Variane_testharness").is_file(), "Missing original runner")
++    require(not build.is_relative_to(out), "Runner destination contains source build")
++    shutil.copytree(build, out, symlinks=True)
++    patched = out / "ariane_tb_mpc.cpp"
++    patched.write_text(text)
++    for name in ("acc_channel.hpp", "ACC_Step_Types.h", "acc_capture.hpp"):
++        shutil.copy2(ROOT / "src/acc" / name, out / name)
++    shutil.copy2(ROOT / "src/cartpole/cartpole_channel.hpp", out / "cartpole_channel.hpp")
++    shutil.copy2(ROOT / "scripts/cva6_bridge.hpp", out / "cva6_bridge.hpp")
++    # Existing dump-enabled testbenches may include this header as well.
++    for header in source.parent.glob("*.hpp"):
++        if not (out / header.name).exists(): shutil.copy2(header, out / header.name)
++    modified = re.sub(pattern, "ariane_tb.o: " + str(patched), original, flags=re.M)
++    modified = modified.replace("-std=c++17", "-std=c++20")
++    (out / "Variane_testharness.mk").write_text(modified)
++    (out / "ariane_tb.o").unlink(missing_ok=True)
++    (out / "ariane_tb.d").unlink(missing_ok=True)
++    command = ["make", "-C", str(out), "-f", "Variane_testharness.mk",
++               "Variane_testharness", "OBJCACHE=", "OPT_FAST=-O3", "-j2"]
++    subprocess.run(command, check=True)
++    write_json(out / "mpc-channel-provenance.json", {
++        "testbench": str(source), "testbench_sha256": sha(source),
++        "original_runner": str(build / "Variane_testharness"),
++        "original_runner_sha256": sha(build / "Variane_testharness"),
++        "runner_sha256": sha(out / "Variane_testharness"),
++        "bridge_sha256": sha(ROOT / "scripts/cva6_bridge.hpp"),
++        "channel_sha256": channel_hashes(), "command": command,
++        "max_cycles_limit": max_cycles_limit,
++        "generated_counters_sha256": sha(build / "Variane_testharness___024root.h"),
++        "rtl_changed": False, "cache_contract": "CVA6 CSR 0x7c1 bypass during exchange only"})
++    print("CVA6_RUNNER=" + str(out / "Variane_testharness"))
++
++
++def run(args):
++    require(not args.exact or args.reference is not None, "--exact requires --reference")
++    elf, out = args.elf.resolve(), args.out.resolve()
++    cartpole = args.controller == "cartpole"
++    plant = ROOT / "src/dynamics" / (args.controller + ".py")
++    dependencies = python_environment()
++    require(out.is_relative_to(ROOT / "build"), "Execution output must be inside build/")
++    require(1 <= args.steps <= 64 and args.timeout > 0, "Invalid steps/timeout")
++    out.mkdir(parents=True, exist_ok=True)
++    capture = out / ("capture.json" if cartpole else "capture.bin")
++    capture.unlink(missing_ok=True)
++    (out / "comparison.json").unlink(missing_ok=True)
++    manifest = {"status": "RUNNING", "controller": args.controller, "mode": args.mode, "steps": args.steps,
++                "elf": str(elf), "elf_sha256": sha(elf), "sources_sha256": source_hash(args.controller),
++                "plant": str(plant), "plant_sha256": sha(plant),
++                "python_environment": dependencies,
++                "integrator": "original OdeDynamics.evolve_state / scipy.integrate.solve_ivp defaults",
++                "architecture": "host plant + persistent controller service",
++                "control_calendar": "one solve per sample; new control applied in next interval; no measured delays",
++                "build_config": (elf.parent / "build-config.txt").read_text(),
++                "target_counters_available": args.mode != "x86", "heap_available": args.mode != "x86"}
++    write_json(out / "run.json", manifest)
++    print("RESULT_DIR=" + str(out), flush=True)
++    started = time.monotonic()
++    try:
++        environment = os.environ.copy()
++        environment["PYTHONDONTWRITEBYTECODE"] = "1"
++        if args.mode == "x86":
++            command = [str(elf)]
++        elif args.mode == "spike":
++            require(shutil.which(args.spike), "Spike executable not found")
++            command = [args.spike, "--isa=RV64GC", "--priv=m",
++                       "-m0x80000000:0x10000000", str(elf)]
++        else:
++            require(args.runner, "Set CVA6_RUNNER to the shared MPC channel runner")
++            runner = shutil.which(args.runner)
++            require(runner is not None, "CVA6 runner not found/executable")
++            require(b"RSHARC_MPC_CHANNEL_V1" in Path(runner).read_bytes(),
++                    "Incompatible runner: run make prepare-runner first")
++            provenance = json.loads(Path(runner).with_name("mpc-channel-provenance.json").read_text())
++            require(provenance["runner_sha256"] == sha(runner) and
++                    provenance["bridge_sha256"] == sha(ROOT / "scripts/cva6_bridge.hpp") and
++                    provenance["channel_sha256"] == channel_hashes(),
++                    "Runner/channel changed: regenerate the shared MPC runner")
++            require(1 <= args.max_cycles <= provenance["max_cycles_limit"] and 0 <= args.seed <= 4294967295,
++                    "Runner cycle/seed parameters outside supported range")
++            syms = symbols(elf, args.prefix, args.controller)
++            address, size = syms["rsharc_" + args.controller + "_mailbox"]
++            environment.update(MPC_MAILBOX_ADDRESS=hex(address), MPC_CONTROLLER=args.controller)
++            command = [runner, f"--max-cycles={args.max_cycles}",
++                       f"--seed={args.seed}", str(elf),
++                       "+debug_disable=1", "+jtag_rbb_enable=0", "+trace_disable=1",
++                       "+progress_interval=5000000", f"+time_out={args.max_cycles}",
++                       f"+ntb_random_seed={args.seed}", "++" + str(elf), "+elf_file=" + str(elf),
++                       "+core_name=cv64a6_imafdc_sv39", f"+tohost_addr={syms['tohost'][0]:016x}"]
++            manifest.update(runner=str(Path(runner).resolve()), runner_sha256=sha(runner),
++                            max_cycles=args.max_cycles, seed=args.seed,
++                            runner_libraries=subprocess.check_output(["ldd", runner], text=True))
++        manifest.update(command=command, plant_command=[sys.executable, "-B",
++            str(Path(__file__).resolve()), "plant", "--controller", args.controller,
++            "--steps", str(args.steps), "--out", str(out)])
++        write_json(out / "run.json", manifest)
++        execute_pair(command, args, environment, out, manifest)
++        if args.mode == "verilator":
++            log_text = (out / "console.log").read_text()
++            require("RSHARC_MPC_CHANNEL_V1" in log_text and
++                    "*** SUCCESS *** (tohost = 0)" in log_text,
++                    "Runner did not confirm channel activation and successful termination")
++        rows = decode_cartpole(capture, args.steps) if cartpole else decode(capture, args.steps)
++        if args.mode != "x86":
++            require(all(r["cycles"] > 0 and r["instret"] > 0 for r in rows), "Missing RV64 counters")
++        if cartpole:
++            manifest.update(scope="64 or fewer closed-loop intervals and controller execution; stability not certified",
++                            solver_error_steps=[r["k"] for r in rows if r["solver_status"] < 0],
++                            infeasible_steps=[r["k"] for r in rows if not r["is_feasible"]],
++                            final_state=rows[-1]["x_end"])
++        else:
++            write_json(out / "runtime_result.json", {"steps": rows})
++        manifest.update(status="PASS", capture_sha256=sha(capture))
++        if args.reference:
++            if cartpole:
++                check = comparison_cartpole(rows, checked_capture(args.reference, controller="cartpole"))
++            else:
++                check = comparison(rows, reference_rows(args.reference))
++            write_json(out / "comparison.json", check)
++            manifest.update(reference=str(args.reference.resolve()), reference_sha256=sha(args.reference))
++            manifest["math_exact"] = check["all_available_math_fields_exact"]
++            print("MATH_EXACT=" + str(manifest["math_exact"]), flush=True)
++            if not cartpole:
++                require(check["historical_tolerances_pass"], "Numerical comparison failed: see comparison.json")
++                print("HISTORICAL_TOLERANCES=PASS", flush=True)
++            require(not args.exact or manifest["math_exact"], "Exact comparison failed: see comparison.json")
++        if cartpole:
++            print("SOLVER_ERROR_STEPS=" + str(manifest["solver_error_steps"]), flush=True)
++            print("INFEASIBLE_STEPS=" + str(manifest["infeasible_steps"]), flush=True)
++        outcome = "EXECUTION_PASS" if cartpole else "PASS"
++        print(f"{args.controller.upper()}_{args.mode.upper()}_STEPS={len(rows)} {outcome}", flush=True)
++    except BaseException as error:
++        manifest.update(status="FAIL", error=str(error))
++        raise
++    finally:
++        manifest["host_seconds"] = time.monotonic() - started
++        write_json(out / "run.json", manifest)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    sub = parser.add_subparsers(dest="action", required=True)
++    execute = sub.add_parser("run")
++    execute.add_argument("--mode", choices=("x86", "verilator", "spike"), required=True)
++    execute.add_argument("--elf", type=Path, required=True)
++    execute.add_argument("--out", type=Path, required=True)
++    execute.add_argument("--spike", default="spike")
++    execute.add_argument("--steps", type=int, default=64)
++    execute.add_argument("--prefix", default="riscv64-unknown-elf")
++    execute.add_argument("--runner", default="")
++    execute.add_argument("--max-cycles", type=int, default=4000000000)
++    execute.add_argument("--timeout", type=int, default=86400)
++    execute.add_argument("--seed", type=int, default=475092611)
++    execute.add_argument("--reference", type=Path)
++    execute.add_argument("--exact", action="store_true")
++    compare = sub.add_parser("compare")
++    compare.add_argument("--observed", type=Path, required=True)
++    compare.add_argument("--reference", type=Path, required=True)
++    compare.add_argument("--steps", type=int, default=64)
++    compare.add_argument("--exact", action="store_true")
++    prepare = sub.add_parser("prepare-runner")
++    prepare.add_argument("--source", type=Path, required=True)
++    prepare.add_argument("--runner-build", type=Path, required=True)
++    prepare.add_argument("--out", type=Path, required=True)
++    plant = sub.add_parser("plant")
++    plant.add_argument("--steps", type=int, required=True)
++    plant.add_argument("--out", type=Path, required=True)
++    for command in (execute, compare, plant):
++        command.add_argument("--controller", choices=("acc", "cartpole"), default="acc")
++    args = parser.parse_args()
++    if args.action == "run":
++        run(args)
++    elif args.action == "plant":
++        if args.controller == "cartpole": run_cartpole_plant(args)
++        else: run_plant(args)
++    elif args.action == "prepare-runner":
++        prepare_runner(args)
++    else:
++        if args.controller == "cartpole":
++            check = comparison_cartpole(checked_capture(args.observed, args.steps, "cartpole"),
++                                        checked_capture(args.reference, controller="cartpole"))
++        else:
++            check = comparison(checked_capture(args.observed, args.steps), reference_rows(args.reference))
++        check.update(observed_sha256=sha(args.observed), reference_sha256=sha(args.reference))
++        write_json(args.observed.with_name("comparison.json"), check)
++        print(json.dumps(check, indent=2))
++        if args.controller == "acc":
++            require(check["historical_tolerances_pass"], "Historical tolerance comparison failed")
++        require(not args.exact or check["all_available_math_fields_exact"], "Exact comparison failed")
++
++
++if __name__ == "__main__":
++    try:
++        main()
++    except (ValueError, OSError, KeyError, ImportError, subprocess.SubprocessError) as error:
++        sys.exit("MPC_RUN_ERROR: " + str(error))
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,4 @@
+-# ACC baseline: planta Python original y MPC separado
++# ACC y Cartpole baseline: planta Python original y MPC separado
+ 
+ La planta se ejecuta en Python en el host y el MPC en un proceso persistente:
+ x86 nativo, Spike RV64GC o CVA6/Verilator bare-metal. Se reutilizan sin cambios
+@@ -7,7 +7,7 @@
+ 
+ ## Fuentes necesarias
+ 
+-- `src/dynamics/cartpole.py`: planta original de Cartpole; pendiente de conectar al lanzador.
++- `src/dynamics/cartpole.py`: planta original de Cartpole, compartiendo el integrador de `base.py`.
+ - `src/dynamics/acc.py`: clase original `ACCDynamics`, ecuaciones y
+   perturbación del vehículo delantero.
+ - `src/dynamics/base.py`: clases originales `Dynamics`/`OdeDynamics` e
+@@ -22,13 +22,13 @@
+ - `src/acc/ACC_Controller.cpp`, `.h` y `ACC_Step_Types.h`: controlador existente,
+   conservado sin cambios.
+ - `src/acc/acc_channel.hpp`, `acc_capture.hpp`: contrato binario y captura.
+-- `scripts/validate_acc.py`: bucle de planta, ejecución, validación y preparación
++- `scripts/run_closed_loop.py`: bucle de planta, ejecución, validación y preparación
+   del runner. Invoca la dinámica original; no duplica sus ecuaciones.
+-- `scripts/cva6_acc_bridge.hpp`: adaptador C++ del testbench de CVA6.
++- `scripts/cva6_bridge.hpp`: adaptador C++ del testbench de CVA6.
+ 
+ Se han eliminado la planta C++ con RK4, el bucle de retardos RK4 sin uso, la
+ cabecera con la referencia congelada RK4 y los dos scripts vacíos de ejecución.
+-Cartpole permanece pendiente y sus fuentes/bibliotecas se conservan.
++Cartpole utiliza el mismo lanzador y puente; sus bibliotecas se conservan.
+ 
+ ## Dependencias y preparación
+ 
+@@ -87,7 +87,7 @@
+ 
+ ## CVA6/Verilator
+ 
+-Se conserva el canal ya preparado. Un runner que solo vuelca RAM al terminar
++ACC y Cartpole comparten el adaptador del testbench. Un runner que solo vuelca RAM al terminar
+ no permite simular la planta externa. Para preparar el adaptador a partir de
+ un build CVA6 compatible existente:
+ 
+@@ -95,10 +95,10 @@
+ make prepare-acc-runner \
+   CVA6_TB=/ruta/al/corev_apu/tb/ariane_tb.cpp \
+   CVA6_BUILD=/ruta/al/build/existente
+-export CVA6_RUNNER="$PWD/build/cva6-channel/Variane_testharness"
+-```
+-
+-La preparación copia el build a build/cva6-channel/ y recompila el testbench
++export CVA6_RUNNER="$PWD/build/cva6-mpc-channel/Variane_testharness"
++```
++
++La preparación copia el build a build/cva6-mpc-channel/ y recompila el testbench
+ C++ y su soporte, reutilizando el modelo RTL generado. No cambia RTL, PMA ni
+ el runner original. El build donante debe conservar sus objetos y fuentes.
+ Se rechazan anclajes desconocidos y un directorio de salida ya existente.
+@@ -162,7 +162,7 @@
+ igualdad exacta de Spike con x86:
+ 
+ ```bash
+-.venv/bin/python scripts/validate_acc.py compare \
++.venv/bin/python scripts/run_closed_loop.py compare \
+   --observed build/rv64/acc/64/results/capture.bin \
+   --reference build/x86/acc/64/results/capture.bin --steps 64 --exact
+ ```
+@@ -192,3 +192,89 @@
+ implementación anterior: no se presenta como idéntica. El MPC no se modifica.
+ Las pequeñas discrepancias de FPU ya identificadas en el runner RTL siguen
+ abiertas; adoptar la planta original no supone corregir su aritmética.
++
++## Cartpole escalar: x86 y Spike
++
++Configuracion: `src/cartpole/config.json`, baseline scalar_tuned800_warm_off_64,
++SLSQP, horizontes 20/4, Ts=0.1 s, maxeval=800, warm start desactivado y semilla 0.
++Las bibliotecas de `external/` se conservan; Cartpole enlaza NLopt y usa libmpc
++sin las extensiones historicas de diagnostico. `main.cpp` mantiene una instancia
++MPC y recibe el estado y control previo del host.
++
++```bash
++make run-cartpole-x86 CARTPOLE_STEPS=64
++make run-cartpole CARTPOLE_STEPS=64 RISCV_PREFIX=/ruta/riscv64-unknown-elf SPIKE=/ruta/spike
++```
++
++`run-cartpole` ejecuta x86 y despues Spike y compara los campos numericos
++publicados. Informa MATH_EXACT y los errores maximos sin aplicar tolerancias
++inventadas ni dar por validada la equivalencia entre arquitecturas. Se excluyen
++contadores y uso de memoria. Para exigir igualdad bit a bit, usar el subcomando
++`compare --controller cartpole --observed ... --reference ... --steps 64 --exact`
++del lanzador. Una diferencia hace fallar esa comprobacion estricta.
++Los resultados quedan en `build/{x86,rv64}/cartpole/<pasos>/results/`:
++`capture.json`, `run.json`, `plant.log`, `console.log` y, al comparar, `comparison.json`.
++
++La planta usa `src/dynamics/cartpole.py` y `base.py` sin cambiar sus ecuaciones
++ni la llamada original a SciPy solve_ivp. Cada intervalo integra con el control
++anterior; el nuevo control se aplica al siguiente intervalo, igual que en ACC.
++Son 64 intervalos y 64 llamadas MPC para CARTPOLE_STEPS=64. Este calendario es
++distinto del experimento archivado con retardos propios (64 intervalos y 9 MPC).
++EXECUTION_PASS acredita terminacion y datos validos; `solver_error_steps` e
++`infeasible_steps` se informan por separado. No acredita estabilizacion ni
++paridad con el MPC original: esa comparacion requiere entradas comunes.
++El indicador is_feasible es el que publica libmpc; no sustituye la auditoria
++adicional de residuos de las ecuaciones que llevaba el experimento historico.
++
++El ELF para Verilator compila. El puente compartido esta preparado; la
++ejecucion real del MPC Cartpole en RTL y en Hector sigue pendiente.
++
++Validacion temporal de esta migracion: 64 pasos x86 y Spike completos, sin
++codigos negativos de solver y con is_feasible=true en las 64 respuestas. Al
++recompilar el controlador original y su libmpc con diagnosticos, usando el mismo
++NLopt, configuracion y transporte, los 64 registros numericos coinciden exactamente
++con la version migrada dentro de cada arquitectura. Esta comprobacion no reproduce
++el calendario historico de retardos. Entre x86 y Spike hay diferencias desde k=2:
++maximo 6.678608127641539e-8 en control, 9.623352836829469e-9 en estado y
++2.9089008313221143e-7 en coste; tambien aparecen en la version original recompilada.
++La ejecucion ACC x86 de 64 pasos conserva exactamente la captura anterior.
++
++
++## Cartpole en CVA6/Verilator y Hector
++
++Preparar una vez el runner compartido sobre el build CVA6 compatible del servidor:
++
++```bash
++make prepare-cartpole-runner CVA6_TB=/ruta/ariane_tb.cpp CVA6_BUILD=/ruta/build/existente
++export CVA6_RUNNER="$PWD/build/cva6-mpc-channel/Variane_testharness"
++make run-cartpole-verilator CARTPOLE_STEPS=1 RISCV_PREFIX=/ruta/bin/riscv64-unknown-elf
++# Tras revisar la captura y comparison.json del paso real:
++make run-cartpole-verilator CARTPOLE_STEPS=64 RISCV_PREFIX=/ruta/bin/riscv64-unknown-elf
++```
++
++Cada comando genera primero la referencia x86 de los mismos pasos. El host
++integra la planta original y el controlador RV64 resuelve el MPC, con el mismo
++calendario de Spike. Resultados: `build/verilator/cartpole/<pasos>/results/`.
++El runner anterior exclusivo de ACC debe prepararse de nuevo; los alias
++`prepare-acc-runner` y `prepare-cartpole-runner` invocan el mismo `prepare-runner`.
++La preparacion recompila el adaptador C++ sobre una copia del modelo ya generado,
++sin modificar RTL. No volver a prepararlo en un directorio existente; seleccionar
++otro con `CVA6_RUNNER_DIR` si cambian el puente o las cabeceras del protocolo.
++
++El presupuesto Cartpole es `CARTPOLE_MAX_CYCLES=100000000000` y el timeout de pared
++`CARTPOLE_HOST_TIMEOUT=1209600` segundos (14 dias); son limites de parada,
++no estimaciones de duracion. Los 64 MPC ya consumen unos 6873 millones de
++instrucciones en Spike: el limite ACC de 4000 millones de ciclos resulta corto.
++La preparacion registra si los contadores del testbench y del modelo generado
++permiten limites superiores a 32 bits; si no, el lanzador rechaza ese presupuesto.
++Mantiene los limites y comandos propios de ACC.
++
++Copiar fuentes, scripts y external/ al servidor; recrear .venv y recompilar alli.
++El runner necesita el build generado, sus fuentes y herramientas compatibles
++existentes en ese servidor. No basta copiar solo cartpole.elf: necesita este
++lanzador, la planta Python y el runner con el canal preparado. Las rutas se pasan
++por variables Make; no se exige tener R-SHARC instalado para ejecutar.
++
++La comprobacion temporal del intercambio de mensajes no sustituye un paso real
++MPC en RTL. La validacion completa de 64 pasos y la paridad numerica con x86
++siguen pendientes hasta obtener sus capturas. No se añaden tests al repositorio.
+--- a/scripts/cva6_acc_bridge.hpp
++++ /dev/null
+@@ -1,67 +0,0 @@
+-#pragma once
+-// Simulation adapter only. Runs after both eval() calls of a complete cycle.
+-#include "acc_channel.hpp"
+-#include <cerrno>
+-#include <cstdlib>
+-#include <cstring>
+-#include <stdexcept>
+-#include <unistd.h>
+-
+-class ACCBridge {
+-  unsigned char* mailbox;
+-  int request_fd, response_fd;
+-  std::uint64_t requests = 0, responses = 0;
+-  static void transfer(int fd, void* data, std::size_t size, bool reading) {
+-    auto* cursor = static_cast<unsigned char*>(data);
+-    while (size) {
+-      const auto n = reading ? ::read(fd, cursor, size) : ::write(fd, cursor, size);
+-      if (n < 0 && errno == EINTR) continue;
+-      if (n <= 0) throw std::runtime_error("ACC channel EOF or I/O error");
+-      cursor += n; size -= n;
+-    }
+-  }
+-  static unsigned long long env(const char* key) {
+-    const char* text = std::getenv(key);
+-    char* end = nullptr;
+-    if (!text || !*text) throw std::runtime_error("ACC channel environment missing");
+-    errno = 0;
+-    const auto value = std::strtoull(text, &end, 0);
+-    if (errno || *end) throw std::runtime_error("Invalid ACC channel environment");
+-    return value;
+-  }
+- public:
+-  ACCBridge(unsigned char* ram, std::size_t size) {
+-    const auto address = env("ACC_MAILBOX_ADDRESS");
+-    if (address < 0x80000000ULL || address - 0x80000000ULL > size - sizeof(ACCMailbox))
+-      throw std::runtime_error("ACC mailbox outside RAM");
+-    mailbox = ram + address - 0x80000000ULL;
+-    request_fd = static_cast<int>(env("ACC_REQUEST_FD"));
+-    response_fd = static_cast<int>(env("ACC_RESPONSE_FD"));
+-    // Marker also lets the launcher reject a dump-only runner before execution.
+-    std::fprintf(stderr, "RSHARC_ACC_CHANNEL_V1\n");
+-  }
+-  void tick() {
+-    std::uint64_t state;
+-    std::memcpy(&state, mailbox, sizeof(state));
+-    if (state == 1) {
+-      if (requests != responses) throw std::runtime_error("Overlapping ACC request");
+-      ACCStepInput input{};
+-      // Block the simulator between cycles while the host integrates the plant.
+-      transfer(request_fd, &input, sizeof(input), true);
+-      if (input.k != static_cast<int>(requests)) throw std::runtime_error("ACC request sequence");
+-      std::memcpy(mailbox + offsetof(ACCMailbox, input), &input, sizeof(input));
+-      state = 2; ++requests;
+-      std::memcpy(mailbox, &state, sizeof(state));
+-    } else if (state == 3) {
+-      if (requests != responses + 1) throw std::runtime_error("Unexpected ACC response");
+-      ACCCaptureRecord output{};
+-      std::memcpy(&output, mailbox + offsetof(ACCMailbox, output), sizeof(output));
+-      if (output.k != responses) throw std::runtime_error("ACC response sequence");
+-      transfer(response_fd, &output, sizeof(output), false);
+-      state = 0; ++responses;
+-      std::memcpy(mailbox, &state, sizeof(state));
+-    } else if (state != 0 && state != 2) {
+-      throw std::runtime_error("Invalid ACC mailbox state");
+-    }
+-  }
+-};
+--- /dev/null
++++ b/scripts/cva6_bridge.hpp
+@@ -0,0 +1,91 @@
++#pragma once
++// Simulation adapter only. Runs after both eval() calls of a complete cycle.
++#include "acc_channel.hpp"
++#include "cartpole_channel.hpp"
++#include <cstdio>
++#include <limits>
++#include <cerrno>
++#include <cstdlib>
++#include <cstring>
++#include <stdexcept>
++#include <unistd.h>
++
++class MPCBridge {
++  unsigned char* mailbox;
++  int request_fd, response_fd;
++  bool cartpole;
++  std::size_t input_size, output_size, input_offset, output_offset;
++  std::uint64_t requests = 0, responses = 0;
++  static void transfer(int fd, void* data, std::size_t size, bool reading) {
++    auto* cursor = static_cast<unsigned char*>(data);
++    while (size) {
++      const auto n = reading ? ::read(fd, cursor, size) : ::write(fd, cursor, size);
++      if (n < 0 && errno == EINTR) continue;
++      if (n <= 0) throw std::runtime_error("MPC channel EOF or I/O error");
++      cursor += n; size -= n;
++    }
++  }
++  static unsigned long long env(const char* key) {
++    const char* text = std::getenv(key);
++    char* end = nullptr;
++    if (!text || !*text) throw std::runtime_error("MPC channel environment missing");
++    errno = 0;
++    const auto value = std::strtoull(text, &end, 0);
++    if (errno || *end) throw std::runtime_error("Invalid MPC channel environment");
++    return value;
++  }
++ public:
++  MPCBridge(unsigned char* ram, std::size_t size) {
++    const char* controller = std::getenv("MPC_CONTROLLER");
++    if (!controller || (std::strcmp(controller, "acc") && std::strcmp(controller, "cartpole")))
++      throw std::runtime_error("MPC_CONTROLLER must be acc or cartpole");
++    cartpole = std::strcmp(controller, "cartpole") == 0;
++    const auto mailbox_size = cartpole ? sizeof(CartpoleMailbox) : sizeof(ACCMailbox);
++    input_size = cartpole ? sizeof(CartpoleStepInput) : sizeof(ACCStepInput);
++    output_size = cartpole ? sizeof(CartpoleStepOutput) : sizeof(ACCCaptureRecord);
++    input_offset = cartpole ? offsetof(CartpoleMailbox, input) : offsetof(ACCMailbox, input);
++    output_offset = cartpole ? offsetof(CartpoleMailbox, output) : offsetof(ACCMailbox, output);
++    const auto address = env("MPC_MAILBOX_ADDRESS");
++    if (size < mailbox_size || address % 64 || address < 0x80000000ULL ||
++        address - 0x80000000ULL > size - mailbox_size)
++      throw std::runtime_error("MPC mailbox outside RAM or misaligned");
++    mailbox = ram + address - 0x80000000ULL;
++    const auto request = env("MPC_REQUEST_FD"), response = env("MPC_RESPONSE_FD");
++    if (request > std::numeric_limits<int>::max() || response > std::numeric_limits<int>::max())
++      throw std::runtime_error("Invalid MPC file descriptor");
++    request_fd = static_cast<int>(request);
++    response_fd = static_cast<int>(response);
++    // Marker also lets the launcher reject a dump-only runner before execution.
++    std::fprintf(stderr, "RSHARC_MPC_CHANNEL_V1 controller=%s\n", controller);
++  }
++  void tick() {
++    std::uint64_t state;
++    std::memcpy(&state, mailbox, sizeof(state));
++    if (state == 1) {
++      if (requests != responses) throw std::runtime_error("Overlapping MPC request");
++      unsigned char input[sizeof(ACCStepInput)]{};
++      static_assert(sizeof(CartpoleStepInput) <= sizeof(input));
++      // Block the simulator between cycles while the host integrates the plant.
++      transfer(request_fd, input, input_size, true);
++      std::uint64_t index = 0;
++      std::memcpy(&index, input, cartpole ? sizeof(std::uint64_t) : sizeof(int));
++      if (index != requests) throw std::runtime_error("MPC request sequence");
++      std::memcpy(mailbox + input_offset, input, input_size);
++      state = 2; ++requests;
++      std::memcpy(mailbox, &state, sizeof(state));
++    } else if (state == 3) {
++      if (requests != responses + 1) throw std::runtime_error("Unexpected MPC response");
++      unsigned char output[sizeof(ACCCaptureRecord)]{};
++      static_assert(sizeof(CartpoleStepOutput) <= sizeof(output));
++      std::memcpy(output, mailbox + output_offset, output_size);
++      std::uint64_t index;
++      std::memcpy(&index, output, sizeof(index));
++      if (index != responses) throw std::runtime_error("MPC response sequence");
++      transfer(response_fd, output, output_size, false);
++      state = 0; ++responses;
++      std::memcpy(mailbox, &state, sizeof(state));
++    } else if (state != 0 && state != 2) {
++      throw std::runtime_error("Invalid MPC mailbox state");
++    }
++  }
++};

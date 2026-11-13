@@ -1,0 +1,15 @@
+# Bibliografía: archivos pesados
+literature/papers/
+literature/searches/
+
+# Archivos temporales de Mendeley
+literature/*.bak
+literature/*.tmp
+
+# Resultados de compilacion
+/build/
+
+# Entorno Python local y bytecode
+/.venv/
+__pycache__/
+*.pyc

@@ -1,0 +1,500 @@
+--- a/src/acc/ACC_Controller.cpp
++++ b/src/acc/ACC_Controller.cpp
+@@ -1,75 +1,12 @@
+-// controller/ACC_Controller.cpp
+-#include "sharc/utils.hpp"
+ #include "ACC_Controller.h"
+-#include <mpc/LMPC.hpp>
+-#include <mpc/Utils.hpp>
++#include <algorithm>
++#include <cassert>
+ #include <cmath>
+-#include <algorithm>
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-#include <chrono>
+-#endif
+-#ifndef RSHARC_DISABLE_QP_EXPORT
+-#include <cstdlib>
+-#include <fstream>
+-#include <memory>
+-#include <mutex>
+-#include <string>
+-#include <vector>
+-#endif
+-#include <debug_levels.hpp>
+-#include <assert.h> 
+-#include "nlohmann/json.hpp"
+-
+-namespace {
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-using AccProfileClock = std::chrono::steady_clock;
+-
+-double secondsBetween(
+-    const AccProfileClock::time_point &start,
+-    const AccProfileClock::time_point &end) {
+-    return std::chrono::duration<double>(end - start).count();
+-}
+-#endif
+-
+-#ifndef RSHARC_DISABLE_QP_EXPORT
+-std::vector<double> denseVectorToStd(const mpc::cvec<> &v) {
+-    std::vector<double> out;
+-    out.reserve(static_cast<size_t>(v.size()));
+-    for (Eigen::Index i = 0; i < v.size(); ++i) {
+-        out.push_back(v(i));
+-    }
+-    return out;
+-}
+-
+-void sparseToCsc(
+-    const mpc::smat &matrix,
+-    std::vector<int> &col_ptr,
+-    std::vector<int> &row_idx,
+-    std::vector<double> &values) {
+-    col_ptr.clear();
+-    row_idx.clear();
+-    values.clear();
+-
+-    col_ptr.reserve(static_cast<size_t>(matrix.cols()) + 1);
+-    row_idx.reserve(static_cast<size_t>(matrix.nonZeros()));
+-    values.reserve(static_cast<size_t>(matrix.nonZeros()));
+-    col_ptr.push_back(0);
+-
+-    for (int col = 0; col < matrix.outerSize(); ++col) {
+-        for (mpc::smat::InnerIterator it(matrix, col); it; ++it) {
+-            row_idx.push_back(static_cast<int>(it.row()));
+-            values.push_back(it.value());
+-        }
+-        col_ptr.push_back(static_cast<int>(row_idx.size()));
+-    }
+-}
+-#endif
+-} // namespace
++#include <limits>
++#include <stdexcept>
+ 
+ void ACC_Controller::setup(const nlohmann::json &json_data){
+-    if (global_debug_levels.debug_program_flow_level >= 2) {
+-      PRINT_WITH_FILE_LOCATION("Start of ACC_Controller::setup()")
+-    }
++    lmpc.setLoggerLevel(mpc::Logger::log_level::NONE);
+ 
+     // Load generic system parameters
+     sample_time              = json_data.at("system_parameters").at("sample_time");
+@@ -81,7 +18,6 @@
+     v_max                    = json_data.at("system_parameters").at("v_max");
+     F_accel_max              = json_data.at("system_parameters").at("F_accel_max");
+     F_brake_max              = json_data.at("system_parameters").at("F_brake_max");
+-    // F_accel_time_constant    = json_data.at("system_parameters").at("F_accel_time_constant");
+     max_brake_acceleration       = json_data.at("system_parameters").at("max_brake_acceleration");
+     max_brake_acceleration_front = json_data.at("system_parameters").at("max_brake_acceleration_front");
+     beta                     = json_data.at("system_parameters").at("beta");
+@@ -104,106 +40,27 @@
+     input_cost_weight        = json_data.at("system_parameters").at("mpc_options").at("input_cost_weight");
+     delta_input_cost_weight  = json_data.at("system_parameters").at("mpc_options").at("delta_input_cost_weight");
+ 
+-    // bool use_state_after_delay_prediction = json_data.at("system_parameters").at("mpc_options").at("use_state_after_delay_prediction");
+-
+     updateStateSpaceMatrices(0);
+     setOptimizerParameters(json_data);
+     setWeights(json_data);
+     setConstraints();
+     setReferences(json_data);
+ 
+-#ifndef RSHARC_DISABLE_QP_EXPORT
+-    const char *qp_export_path_env = std::getenv("SHARC_QP_EXPORT_PATH");
+-    if (qp_export_path_env != nullptr && qp_export_path_env[0] != '\0') {
+-      int max_samples = 1;
+-      const char *max_samples_env = std::getenv("SHARC_QP_EXPORT_MAX_SAMPLES");
+-      if (max_samples_env != nullptr) {
+-        max_samples = std::max(1, std::atoi(max_samples_env));
+-      }
+-
+-      auto qp_export_path = std::make_shared<std::string>(qp_export_path_env);
+-      auto emitted_samples = std::make_shared<int>(0);
+-      auto export_lock = std::make_shared<std::mutex>();
+-
+-      lmpc.setQPExportHook(
+-        [qp_export_path, emitted_samples, max_samples, export_lock](
+-            const mpc::smat &P,
+-            const mpc::cvec<> &q,
+-            const mpc::smat &A,
+-            const mpc::cvec<> &l,
+-            const mpc::cvec<> &u) {
+-          std::lock_guard<std::mutex> guard(*export_lock);
+-          if (*emitted_samples >= max_samples) {
+-            return;
+-          }
+-
+-          std::vector<int> p_colptr;
+-          std::vector<int> p_rowind;
+-          std::vector<double> p_data;
+-          std::vector<int> a_colptr;
+-          std::vector<int> a_rowind;
+-          std::vector<double> a_data;
+-          sparseToCsc(P, p_colptr, p_rowind, p_data);
+-          sparseToCsc(A, a_colptr, a_rowind, a_data);
+-
+-          nlohmann::json sample;
+-          sample["n"] = P.rows();
+-          sample["m"] = A.rows();
+-          sample["p_nnz"] = P.nonZeros();
+-          sample["a_nnz"] = A.nonZeros();
+-          sample["P_colptr"] = p_colptr;
+-          sample["P_rowind"] = p_rowind;
+-          sample["P_data"] = p_data;
+-          sample["q"] = denseVectorToStd(q);
+-          sample["A_colptr"] = a_colptr;
+-          sample["A_rowind"] = a_rowind;
+-          sample["A_data"] = a_data;
+-          sample["l"] = denseVectorToStd(l);
+-          sample["u"] = denseVectorToStd(u);
+-
+-          std::ofstream out(*qp_export_path, std::ios::app);
+-          if (out.is_open()) {
+-            out << sample.dump() << std::endl;
+-            ++(*emitted_samples);
+-          }
+-        });
+-    }
+-#endif
+-
+-#ifndef RSHARC_DISABLE_ACC_DIAGNOSTICS
+-    if (global_debug_levels.debug_dynamics_level >= 1) {
+-      printMat("Ad", Ad);
+-      printMat("Bd", Bd);
+-      printMat("Bd_disturbance", Bd_disturbance);
+-      printVector("xmin", xmin);
+-      printVector("xmax", xmax);
+-      printVector("ymin", ymin);
+-      printVector("ymax", ymax);
+-      printVector("umin", umin);
+-      printVector("umax", umax);
+-    }
+-#endif
+-
+     // Check that the initial condition does not violate the constraints.
+     xVec x0;
+     uVec u0;
+     yVec y0;
+-    loadColumnValuesFromJson(x0, json_data, "x0");
+-    loadColumnValuesFromJson(u0, json_data, "u0");
++    if (json_data.at("x0").size() != Tnx || json_data.at("u0").size() != Tnu) {
++        throw std::invalid_argument("Initial state/control dimensions do not match");
++    }
++    for (int i = 0; i < Tnx; ++i) x0(i) = json_data.at("x0").at(i).get<double>();
++    for (int i = 0; i < Tnu; ++i) u0(i) = json_data.at("u0").at(i).get<double>();
+     control = u0;
+     y0 = C * x0;
+ 
+     assert(v_max >= x0[v_index]);
+     assert(v_max >= y0[0]);
+ 
+-    // PRINT_WITH_FILE_LOCATION("Checking initial conditions satisfy constraints.")
+-    // assertVectorAlmostLessThan("xmin", xmin, "  x0",   x0, 1e-1);
+-    // assertVectorAlmostLessThan("  x0",   x0, "xmax", xmax, 1e-1);
+-    // assertVectorAlmostLessThan("umin", umin, "  u0",   u0, 1e-1);
+-    // assertVectorAlmostLessThan("  u0",   u0, "umax", umax, 1e-1);
+-    // assertVectorAlmostLessThan("ymin", ymin, "  y0",   y0, 1e-1);
+-    // assertVectorAlmostLessThan("  y0",   y0, "ymax", ymax, 1e-1);
+-    
+ }
+ 
+ ACCStepResult ACC_Controller::calculateStep(const ACCStepInput &input) {
+@@ -246,139 +103,33 @@
+     const xVec &x,
+     const wVec &w) {
+     calculateControlCore(k, t, x, w);
+-    updateLatestMetadata();
+-    emitControlDiagnostics(k, x);
+-}
+-
+-void ACC_Controller::updateLatestMetadata() {
+-    latest_metadata.clear();
+-    latest_metadata["iterations"] = lmpc_step_result.num_iterations;
+-    latest_metadata["solver_status"] = lmpc_step_result.solver_status;
+-    latest_metadata["solver_status_msg"] = lmpc_step_result.solver_status_msg;
+-    latest_metadata["is_feasible"] = lmpc_step_result.is_feasible;
+-    latest_metadata["cost"] = lmpc_step_result.cost;
+-    latest_metadata["constraint_error"] = lmpc_step_result.primal_residual;
+-    latest_metadata["dual_residual"] = lmpc_step_result.dual_residual;
+-    latest_metadata["status"] =
+-        mpc::SolutionStats::resultStatusToString(lmpc_step_result.status);
+-}
+-
+-void ACC_Controller::emitControlDiagnostics(int k, const xVec &x) {
+-#ifdef RSHARC_DISABLE_ACC_DIAGNOSTICS
+-    (void)k;
+-    (void)x;
+-#else
+-    mpc::OptSequence optimal_sequence = lmpc.getOptimalSequence();
+-    mat<prediction_horizon+1, Tnx> opt_state_seq = optimal_sequence.state;
+-    mat<prediction_horizon+1, Tnu> opt_input_seq = optimal_sequence.input;
+-    mat<prediction_horizon+1, Tny> opt_output_seq = optimal_sequence.output;
+-
+-    xVec x_opt_next = opt_state_seq.row(0);
+-    PRINT("Checking if x satisfies xmin <= x <= xmax for k=" << k)
+-    // assertVectorAlmostLessThan(  "xmin",       xmin, "x^*(0)", x_opt_next, 1e-1);
+-    // assertVectorAlmostLessThan("x^*(0)", x_opt_next,   "xmax",       xmax, 1e-1);
+-
+-    uVec u_opt_next = opt_input_seq.row(0);
+-    PRINT("Checking if u satisfies umin <= u <= umax for k=" << k)
+-    // assertVectorAlmostLessThan(  "umin",       umin, "u^*(0)", u_opt_next, 1e-1);
+-    // assertVectorAlmostLessThan("u^*(0)", u_opt_next,   "umax",       umax, 1e-1);
+-
+-    PRINT("control - u_opt_next: " << control - u_opt_next)
+-
+-    if (global_debug_levels.debug_optimizer_stats_level >= 1)
+-    {
+-      PRINT_WITH_FILE_LOCATION("Optimizer Info")
+-      PRINT("       solver_status: " << lmpc_step_result.solver_status)
+-      PRINT("   solver_status_msg: " << lmpc_step_result.solver_status_msg)
+-      PRINT("         is_feasible: " << lmpc_step_result.is_feasible)
+-      PRINT("       Result status: " << lmpc_step_result.status)
+-      PRINT("Number of iterations: " << lmpc_step_result.num_iterations)
+-      PRINT("                Cost: " << lmpc_step_result.cost)
+-      PRINT("    Constraint error: " << lmpc_step_result.primal_residual)
+-      PRINT("          Dual error: " << lmpc_step_result.dual_residual)
+-      PRINT("  Optimal x Sequence:\n" << opt_state_seq)
+-      PRINT("  Optimal u Sequence:\n" << opt_input_seq)
+-      PRINT("  Optimal y Sequence:\n" << opt_output_seq)
+-    }
+-
+-    yVec y = C * x;
+-    yVec y_err = y - yRef;
+-    printVector("y", y);
+-    printVector("y_err", y_err);
+-#endif
+ }
+ 
+ void ACC_Controller::calculateControlCore(int k, double t, const xVec &x, const wVec &w){
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_acc_start = AccProfileClock::now();
+-#endif
+     // Calculate the control value "u" based on the current state (or state estimate) "x" and the 
+     // current exogenuous input (or its estimate) "w".
+ 
+-    // PRINT_WITH_FILE_LOCATION("Checking constraints for 'x' at start of calculateControl(k=" << k << ").")
+-    // assertVectorAlmostLessThan("xmin", xmin, "   x",    x, 1e-1);
+-    // assertVectorAlmostLessThan("   x",    x, "xmax", xmax, 1e-1);
+-
+     state            = x;
+     exogenous_input = w;
+ 
+     // Update the state matrices to linearize around the current velocity.
+     double v = x[v_index];
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_before_update_state = AccProfileClock::now();
+-#endif
+     updateStateSpaceMatrices(v);
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_after_update_state = AccProfileClock::now();
+-#endif
+ 
+     // Update terminal constraint based on the measurement of the front vehicle's velocity.
+     double v_front_underestimate = w[0];
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_before_terminal = AccProfileClock::now();
+-#endif
+     updateTerminalConstraint(v_front_underestimate);
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_after_terminal = AccProfileClock::now();
+-#endif
+ 
+     for (int col = 0; col < prediction_horizon; col++){
+       w_series(0, col) = std::max(0.0, v_front_underestimate - col * sample_time * max_brake_acceleration_front);
+       w_series(1, col) = 1.0; 
+     }
+-    // PRINT("w (predicted):\n" << w_series)
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_before_exogenous = AccProfileClock::now();
+-#endif
+     lmpc.setExogenousInputs(w_series);
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_after_exogenous = AccProfileClock::now();
+-#endif
+ 
+     // Call LMPC control calculation here
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_before_optimize = AccProfileClock::now();
+-#endif
+     lmpc_step_result = lmpc.optimize(state, control);
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_after_optimize = AccProfileClock::now();
+-#endif
+     control = lmpc_step_result.cmd;
+-    // PRINT("Result of calculateControl(): " << control)
+-
+-#ifdef RSHARC_MPC_REBUILD_PROFILE
+-    const auto t_acc_end = AccProfileClock::now();
+-    Logger::instance().log(Logger::log_type::INFO)
+-        << "[ACC_STEP_PROFILE] "
+-        << "k=" << k
+-        << ",t=" << t
+-        << ",update_state=" << secondsBetween(t_before_update_state, t_after_update_state)
+-        << ",terminal=" << secondsBetween(t_before_terminal, t_after_terminal)
+-        << ",exogenous=" << secondsBetween(t_before_exogenous, t_after_exogenous)
+-        << ",optimize=" << secondsBetween(t_before_optimize, t_after_optimize)
+-        << ",total=" << secondsBetween(t_acc_start, t_acc_end)
+-        << std::endl;
+-#endif
++
+ }
+ 
+ void ACC_Controller::updateStateSpaceMatrices(double v0) {
+@@ -386,9 +137,6 @@
+     Update the state space matrices based on the linearization of the dynamics centered at 
+     the current velocity "v0".
+     */
+-    if (global_debug_levels.debug_program_flow_level >= 2){ 
+-      PRINT_WITH_FILE_LOCATION("Start of ACC_Controller::updateStateSpaceMatrices")
+-    }
+ 
+     // Define continuous-time state matrix A_c
+     Ac << 0, 0,                1, // p   (position)
+@@ -402,7 +150,6 @@
+     //         ^           ^   
+     // u:     T^a         T^b    
+ 
+-
+     // State to output matrix
+     C <<   0, 0, 1;
+     //     ^  ^  ^
+@@ -411,16 +158,6 @@
+     // Constant force from friction: k = β + γv²
+     double k = beta - gamma * std::pow(v0, 2); 
+     assert(k > 0);
+-
+-#ifndef RSHARC_DISABLE_ACC_DIAGNOSTICS
+-    if (global_debug_levels.debug_dynamics_level >= 1){ 
+-      printMat("Ac (continuous)", Ac);
+-      printMat("Bc (continuous)", Bc);
+-      PRINT("-2*gamma*v0/mass: " << -2*gamma*v0/mass)
+-      PRINT("               k: " << k)
+-      PRINT("         -k/mass: " << -k/mass)
+-    }
+-#endif
+ 
+     // Set input disturbance matrix.
+     Bc_disturbance << 0,       0, 
+@@ -439,9 +176,6 @@
+ }
+ 
+ void ACC_Controller::setOptimizerParameters(const nlohmann::json &json_data) {
+-    if (global_debug_levels.debug_program_flow_level >= 1) {
+-      PRINT_WITH_FILE_LOCATION("Start of ACC_Controller::setOptimizerParameters")
+-    }
+     LParameters params;
+     params.alpha = 1.6;
+     const auto& osqp_options = json_data.at("system_parameters").at("osqp_options");
+@@ -453,8 +187,7 @@
+     params.eps_abs           = osqp_options.at("abs_tolerance");
+     params.eps_prim_inf      = osqp_options.at("primal_infeasibility_tolerance");
+     params.eps_dual_inf      = osqp_options.at("dual_infeasibility_tolerance");
+-    // We disable the OSQP time limit when running with Scarab because the OCQP time limit counts wall time, not the simulated time, producing incorrect results. 
+-    // params.time_limit        = json_data.at("system_parameters").at("osqp_options").at("time_limit");
++    // Keep the baseline independent of wall-clock time.
+     params.time_limit        = 0;
+     params.maximum_iteration = osqp_options.at("maximum_iteration");
+     params.verbose           = osqp_options.at("verbose");
+@@ -465,9 +198,6 @@
+ }
+ 
+ void ACC_Controller::setWeights(const nlohmann::json &json_data) {
+-    if (global_debug_levels.debug_program_flow_level >= 1) {
+-      PRINT_WITH_FILE_LOCATION("Start of ACC_Controller::setWeights()")
+-    }
+     if (output_cost_weight < 0) {
+         throw std::invalid_argument("The output weight was negative.");
+     }
+@@ -476,21 +206,10 @@
+     uVec inputWeight      = uVec::Ones() * input_cost_weight;
+     uVec deltaInputWeight = uVec::Ones() * delta_input_cost_weight;
+ 
+-#ifndef RSHARC_DISABLE_ACC_DIAGNOSTICS
+-    if (global_debug_levels.debug_dynamics_level >=1){
+-      printVector(    "outputWeight",     outputWeight);
+-      printVector(     "inputWeight",      inputWeight);
+-      printVector("deltaInputWeight", deltaInputWeight);
+-    }
+-#endif
+-
+     lmpc.setObjectiveWeights(outputWeight, inputWeight, deltaInputWeight, {-1, -1});
+ }
+ 
+ void ACC_Controller::setConstraints() {
+-  if (global_debug_levels.debug_program_flow_level >= 1) {
+-    PRINT_WITH_FILE_LOCATION("Start of ACC_Controller::setConstraints()")
+-  }
+   const double inf = std::numeric_limits<double>::infinity();
+ 
+   umin << 0, // acceleration force
+@@ -510,15 +229,6 @@
+   ymin <<     0; // velocity
+ 
+   ymax << v_max; // velocity
+-
+-#ifndef RSHARC_DISABLE_ACC_DIAGNOSTICS
+-  printVector("xmin", xmin);
+-  printVector("xmax", xmax);
+-  printVector("umin", umin);
+-  printVector("umax", umax);
+-  printVector("ymin", ymin);
+-  printVector("ymax", ymax);
+-#endif
+ 
+   bool are_x_bounds_okay = lmpc.setStateBounds( xmin, xmax, {-1, -1});
+   bool are_u_bounds_okay = lmpc.setInputBounds( umin, umax, {-1, -1});
+@@ -526,7 +236,6 @@
+   assert(are_x_bounds_okay);
+   assert(are_u_bounds_okay);
+   assert(are_y_bounds_okay);
+-  PRINT("Bounds are OK.")
+ 
+   // Initially, set a terminal constraint that assume the front vehicle is not moving, 
+   // until we have a sensor measurement to the contrary.
+@@ -536,9 +245,6 @@
+ void ACC_Controller::updateTerminalConstraint(double v_front_underestimate) {
+   // ==== Set the terminal constraint ====
+   //    h(end) - v(end)*v_max/2a > d_min - v_f(end)^2 / 2a_F
+-  if (global_debug_levels.debug_program_flow_level >= 2) {
+-    PRINT_WITH_FILE_LOCATION("Start of ACC_Controller::updateTerminalConstraint()")
+-  }
+ 
+   // Create a vector 'c' for a constraint in the form "cᵀ x ≥ s_min."
+   xVec xc;
+@@ -553,10 +259,6 @@
+   // Calculate "d_min - v_f(end)^2 / 2a_F"
+   double constraint_min = d_min - pow(worst_case_front_velocity_at_ph, 2) / (2*max_brake_acceleration_front);
+ 
+-  PRINT("worst_case_front_velocity_at_ph=" << worst_case_front_velocity_at_ph)
+-  PRINT("                 constraint_min=" << constraint_min)
+-  PRINT("        needed headway at v_des=" << constraint_min + v_des * v_max/(2*max_brake_acceleration))
+-  
+   uVec uc = uVec::Zero();
+   // Set the scalar constraint as a terminal constraint (using the slice "{prediction_horizon-1, prediction_horizon}")
+   // means this contraint is only applied at the last step in the prediction horizon.
+@@ -567,12 +269,6 @@
+ void ACC_Controller::setReferences(const nlohmann::json &json_data) {
+     yRef << v_des;
+     assert(v_des > 0);
+-    PRINT("v_des: " << v_des)
+-#ifndef RSHARC_DISABLE_ACC_DIAGNOSTICS
+-    printVector("yRef", yRef);
+-#endif
+     lmpc.setReferences(yRef, uVec::Zero(), uVec::Zero(), {-1, -1});
+ }
+ 
+-// Register the controller
+-REGISTER_CONTROLLER("ACC_Controller", ACC_Controller)
+--- a/src/acc/ACC_Controller.h
++++ b/src/acc/ACC_Controller.h
+@@ -93,8 +93,6 @@
+         const xVec &x,
+         const wVec &w);
+ 
+-    void updateLatestMetadata();
+-    void emitControlDiagnostics(int k, const xVec &x);
+ 
+ public:
+     // Constructor that initializes dimensions and calls setup
