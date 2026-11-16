@@ -1,0 +1,175 @@
+# Archivo: src/cartpole/main.cpp
+# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
+# Cambios acumulados: Configurar, medir y publicar los HPM por paso; conservar los comentarios del usuario y las ramas x86/Spike.
+# SHA256 del archivo resultante: 5f34a23cdd74d23179aa16d255b5f8cfabe0530596d9d11223a962ec9839ddee
+
+diff --git a/src/cartpole/main.cpp b/src/cartpole/main.cpp
+index d6f5b14..4304c11 100644
+--- a/src/cartpole/main.cpp
++++ b/src/cartpole/main.cpp
+@@ -7,6 +7,7 @@
+ #include "cartpole_channel.hpp"
+ #include "cartpole_config.hpp"
+ #include "debug_levels.hpp"
++#include "cva6_profile.h"
+ 
+ DebugLevels global_debug_levels;
+ 
+@@ -40,18 +41,47 @@ static bool receive(CartpoleStepInput& input) {
+   exchange_end(previous);
+   return true;
+ }
+-static bool send(const CartpoleStepOutput& output) {
++// static bool send(const CartpoleStepOutput& output) {
++//   const auto previous = exchange_begin();
++//   const auto* src = reinterpret_cast<const unsigned char*>(&output);
++//   auto* dst = reinterpret_cast<volatile unsigned char*>(&rsharc_cartpole_mailbox.output);
++//   for (std::size_t i = 0; i < sizeof(output); ++i) dst[i] = src[i];
++//   asm volatile("fence rw,rw" ::: "memory");
++//   rsharc_cartpole_mailbox.state = 3;
++//   asm volatile("fence rw,rw" ::: "memory");
++//   while (rsharc_cartpole_mailbox.state != 0) {}
++//   exchange_end(previous);
++//   return true;
++// }
++// cambio para lectura de eventos
++static bool send(
++    const CartpoleStepOutput& output,
++    const cva6_profile_sample& profile)
++{
+   const auto previous = exchange_begin();
++
+   const auto* src = reinterpret_cast<const unsigned char*>(&output);
+-  auto* dst = reinterpret_cast<volatile unsigned char*>(&rsharc_cartpole_mailbox.output);
+-  for (std::size_t i = 0; i < sizeof(output); ++i) dst[i] = src[i];
++  auto* dst = reinterpret_cast<volatile unsigned char*>(
++      &rsharc_cartpole_mailbox.output);
++
++  for (std::size_t i = 0; i < sizeof(output); ++i) {
++    dst[i] = src[i];
++  }
++
++  cva6_profile_publish(rsharc_cartpole_mailbox.reserved, &profile);
++
+   asm volatile("fence rw,rw" ::: "memory");
+   rsharc_cartpole_mailbox.state = 3;
+   asm volatile("fence rw,rw" ::: "memory");
++
+   while (rsharc_cartpole_mailbox.state != 0) {}
++
+   exchange_end(previous);
+   return true;
+ }
++//fin cambio
++
++
+ #elif defined(__riscv)
+ extern "C" volatile std::uint64_t tohost, fromhost;
+ extern "C" std::size_t rsharc_heap_high_water();
+@@ -77,14 +107,33 @@ static bool transfer(std::uint64_t operation, void* data, std::size_t size) {
+   return true;
+ }
+ static bool receive(CartpoleStepInput& input) { return transfer(63, &input, sizeof(input)); }
+-static bool send(CartpoleStepOutput& output) { return transfer(64, &output, sizeof(output)); }
++// static bool send(CartpoleStepOutput& output) { return transfer(64, &output, sizeof(output)); }
++//cambio para spike
++static bool send(
++    CartpoleStepOutput& output,
++    const cva6_profile_sample&)
++{
++  return transfer(64, &output, sizeof(output));
++}
++
++// fin cambio
+ #else
+ static bool receive(CartpoleStepInput& input) {
+   return std::fread(&input, sizeof(input), 1, stdin) == 1;
+ }
+-static bool send(const CartpoleStepOutput& output) {
+-  return std::fwrite(&output, sizeof(output), 1, stdout) == 1 && std::fflush(stdout) == 0;
++// static bool send(const CartpoleStepOutput& output) {
++//   return std::fwrite(&output, sizeof(output), 1, stdout) == 1 && std::fflush(stdout) == 0;
++// }
++//cambio para x86
++static bool send(
++    const CartpoleStepOutput& output,
++    const cva6_profile_sample&)
++{
++  return std::fwrite(&output, sizeof(output), 1, stdout) == 1
++      && std::fflush(stdout) == 0;
+ }
++
++//fin cambio
+ #endif
+ 
+ static std::uint64_t cycle() {
+@@ -122,6 +171,11 @@ int main() {
+     mpc::Logger::instance().setLevel(mpc::Logger::log_level::NONE);
+     const auto config = nlohmann::json::parse(rsharc_cartpole::config_json);
+     auto controller = std::make_unique<CartpoleServiceController>(config);
++    //se añade al controlador, cambios para contadores de eventods
++#if CVA6_PROFILE_ACTIVE
++    if (!cva6_profile_init()) return 91;
++#endif
++    //fin cambios
+     for (std::uint64_t k = 0; k < RSHARC_CARTPOLE_MAX_STEPS; ++k) {
+       CartpoleStepInput input{};
+       if (!receive(input) || input.k != k || !std::isfinite(input.t)) return 88;
+@@ -135,9 +189,28 @@ int main() {
+       disturbance(0) = input.w[0];
+       previous(0) = input.u_previous[0];
+       controller->seedControl(previous);
++      // const auto c0 = cycle(), i0 = instret();
++      // controller->calculateControl(static_cast<int>(k), input.t, state, disturbance);
++      // const auto i1 = instret(), c1 = cycle();
++      //Inicio cambio contadores de eventos
++#if CVA6_PROFILE_ACTIVE
++      const auto profile_begin = cva6_profile_read();
++#else
+       const auto c0 = cycle(), i0 = instret();
+-      controller->calculateControl(static_cast<int>(k), input.t, state, disturbance);
++#endif
++
++      controller->calculateControl(
++          static_cast<int>(k), input.t, state, disturbance);
++
++#if CVA6_PROFILE_ACTIVE
++      const auto profile_end = cva6_profile_read();
++      const auto profile = cva6_profile_delta(
++          profile_begin, profile_end);
++#else
+       const auto i1 = instret(), c1 = cycle();
++      const cva6_profile_sample profile{};
++#endif
++//fin cambio contadores de eventos
+       const auto control = controller->getLatestControl();
+       if (!control.allFinite()) return 90;
+       const auto metadata = controller->getLatestMetadata();
+@@ -148,14 +221,25 @@ int main() {
+       output.cost_available = metadata.at("cost_available").get<bool>();
+       output.u = control(0);
+       if (output.cost_available) output.cost = metadata.at("cost").get<double>();
++      // output.cycles = c1 - c0;
++      // output.instret = i1 - i0;
++      //cambios contadores de eventos
++#if CVA6_PROFILE_ACTIVE
++      output.cycles = profile.cycles;
++      output.instret = profile.instret;
++#else
+       output.cycles = c1 - c0;
+       output.instret = i1 - i0;
++#endif
++      //fin cambios contadores de eventos
+ #ifdef __riscv
+       output.heap_peak = rsharc_heap_high_water();
+       output.heap_capacity = rsharc_heap_capacity();
+ #endif
+-      if (!send(output)) return 89;
++      // if (!send(output)) return 89;
++      if (!send(output, profile)) return 89;
+     }
++    cva6_profile_stop();
+     return 0;
+   } catch (const std::exception&) {
+     return 90;

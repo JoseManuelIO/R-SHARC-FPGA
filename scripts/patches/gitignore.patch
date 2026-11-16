@@ -1,0 +1,17 @@
+# Archivo: .gitignore
+# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
+# Cambios acumulados: Excluir del repositorio la carpeta local plans/.
+# SHA256 del archivo resultante: 8fa0452d83f1c26a53e4e50afb2185fc1834acc925b5e53fd1187dcbe1a02272
+
+diff --git a/.gitignore b/.gitignore
+index 6c54321..7c385a5 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -13,3 +13,6 @@ literature/*.tmp
+ /.venv/
+ __pycache__/
+ *.pyc
++
++# Planes de trabajo locales
++/plans/

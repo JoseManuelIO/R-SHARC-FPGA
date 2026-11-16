@@ -13,3 +13,6 @@ literature/*.tmp
 /.venv/
 __pycache__/
 *.pyc
+
+# Planes de trabajo locales
+/plans/

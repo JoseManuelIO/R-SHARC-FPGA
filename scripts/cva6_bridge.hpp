@@ -2,6 +2,8 @@
 // Simulation adapter only. Runs after both eval() calls of a complete cycle.
 #include "acc_channel.hpp"
 #include "cartpole_channel.hpp"
+#define RSHARC_CVA6_PROFILE_HOST 1
+#include "cva6_profile.h"
 #include <cstdio>
 #include <limits>
 #include <cerrno>
@@ -81,6 +83,25 @@ class MPCBridge {
       std::uint64_t index;
       std::memcpy(&index, output, sizeof(index));
       if (index != responses) throw std::runtime_error("MPC response sequence");
+            // Recoger los contadores publicados por el firmware CartPole.
+      if (cartpole) {
+        CartpoleStepOutput decoded{};
+        std::uint64_t reserved[7]{};
+
+        std::memcpy(&decoded, output, sizeof(decoded));
+
+        std::memcpy(
+            reserved,
+            mailbox + offsetof(CartpoleMailbox, reserved),
+            sizeof(reserved));
+
+        cva6_profile_log(
+            stderr,
+            decoded.k,
+            decoded.cycles,
+            decoded.instret,
+            reserved);
+      }
       transfer(response_fd, output, output_size, false);
       state = 0; ++responses;
       std::memcpy(mailbox, &state, sizeof(state));

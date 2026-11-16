@@ -1,0 +1,18 @@
+# Archivo: Makefile
+# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
+# Cambios acumulados: Activar los HPM de CartPole exclusivamente en el perfil Verilator.
+# SHA256 del archivo resultante: 413ea49070a7945085b890fa34d20844a7a72caf127279138fbca3950e997789
+
+diff --git a/Makefile b/Makefile
+index bc312b1..9b1dd56 100644
+--- a/Makefile
++++ b/Makefile
+@@ -327,6 +327,7 @@ CARTPOLE_LIBS := -Wl,--start-group "$(NLOPT_LIB)" \
+ endif
+ ifeq ($(PROFILE),verilator)
+ CARTPOLE_DEFINES += -DRSHARC_BAREMETAL_DISABLE_CONSOLE -DRSHARC_CARTPOLE_CVA6_CHANNEL
++CARTPOLE_DEFINES += -DRSHARC_CVA6_PROFILE_ENABLE=1
+ endif
+ CARTPOLE_OBJECTS := $(addprefix $(CARTPOLE_DIR)/obj/,$(addsuffix .o,$(basename $(CARTPOLE_SOURCES))))
+ 

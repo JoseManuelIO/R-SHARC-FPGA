@@ -371,7 +371,7 @@ def execute_pair(command, args, environment, out, manifest):
 def channel_hashes():
     return {name: sha(ROOT / "src" / name) for name in (
         "acc/acc_channel.hpp", "acc/ACC_Step_Types.h", "acc/acc_capture.hpp",
-        "cartpole/cartpole_channel.hpp")}
+        "cartpole/cartpole_channel.hpp", "common/cva6_profile.h")}
 
 
 def prepare_runner(args):
@@ -418,6 +418,7 @@ def prepare_runner(args):
     for name in ("acc_channel.hpp", "ACC_Step_Types.h", "acc_capture.hpp"):
         shutil.copy2(ROOT / "src/acc" / name, out / name)
     shutil.copy2(ROOT / "src/cartpole/cartpole_channel.hpp", out / "cartpole_channel.hpp")
+    shutil.copy2(ROOT / "src/common/cva6_profile.h", out / "cva6_profile.h")
     shutil.copy2(ROOT / "scripts/cva6_bridge.hpp", out / "cva6_bridge.hpp")
     # Existing dump-enabled testbenches may include this header as well.
     for header in source.parent.glob("*.hpp"):
