@@ -1,0 +1,45 @@
+# Archivo: scripts/cva6_bridge.hpp
+# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
+# Cambios acumulados: Recoger los seis HPM publicados por CartPole y registrar cada paso en console.log.
+# SHA256 del archivo resultante: cbd7064c1ab31f9c20123722b89abf76f17b9d697eab6254e89969a450600334
+
+diff --git a/scripts/cva6_bridge.hpp b/scripts/cva6_bridge.hpp
+index 5dc4218..0b832cd 100644
+--- a/scripts/cva6_bridge.hpp
++++ b/scripts/cva6_bridge.hpp
+@@ -2,6 +2,8 @@
+ // Simulation adapter only. Runs after both eval() calls of a complete cycle.
+ #include "acc_channel.hpp"
+ #include "cartpole_channel.hpp"
++#define RSHARC_CVA6_PROFILE_HOST 1
++#include "cva6_profile.h"
+ #include <cstdio>
+ #include <limits>
+ #include <cerrno>
+@@ -81,6 +83,25 @@ class MPCBridge {
+       std::uint64_t index;
+       std::memcpy(&index, output, sizeof(index));
+       if (index != responses) throw std::runtime_error("MPC response sequence");
++            // Recoger los contadores publicados por el firmware CartPole.
++      if (cartpole) {
++        CartpoleStepOutput decoded{};
++        std::uint64_t reserved[7]{};
++
++        std::memcpy(&decoded, output, sizeof(decoded));
++
++        std::memcpy(
++            reserved,
++            mailbox + offsetof(CartpoleMailbox, reserved),
++            sizeof(reserved));
++
++        cva6_profile_log(
++            stderr,
++            decoded.k,
++            decoded.cycles,
++            decoded.instret,
++            reserved);
++      }
+       transfer(response_fd, output, output_size, false);
+       state = 0; ++responses;
+       std::memcpy(mailbox, &state, sizeof(state));

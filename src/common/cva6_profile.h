@@ -17,17 +17,17 @@
 #endif
 
 /*
- * Grupo A.
+ * Grupo B: actividad.
  *
- * events[0] -> mhpmcounter3 -> evento 1:  refill de instrucciones
- * events[1] -> mhpmcounter4 -> evento 2:  MSHR de lectura de datos
- * events[2] -> mhpmcounter5 -> evento 10: prediccion incorrecta
- * events[3] -> mhpmcounter6 -> evento 14: scoreboard lleno
- * events[4] -> mhpmcounter7 -> evento 15: frontend sin instruccion valida
- * events[5] -> mhpmcounter8 -> evento 22: senal de dependencia RAW
+ * events[0] -> mhpmcounter3 -> evento 5:  ciclos con retirada LOAD
+ * events[1] -> mhpmcounter4 -> evento 6:  ciclos con retirada STORE
+ * events[2] -> mhpmcounter5 -> evento 9:  ciclos con retirada CTRL_FLOW
+ * events[3] -> mhpmcounter6 -> evento 10: prediccion incorrecta
+ * events[4] -> mhpmcounter7 -> evento 20: ciclos con retirada ALU/MULT
+ * events[5] -> mhpmcounter8 -> evento 21: ciclos con retirada FP
  */
 static const uint64_t cva6_profile_event_ids[6] = {
-    1, 2, 10, 14, 15, 22
+    5, 6, 9, 10, 20, 21
 };
 
 /*

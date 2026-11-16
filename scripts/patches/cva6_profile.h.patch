@@ -1,15 +1,17 @@
 # Archivo: src/common/cva6_profile.h
 # Fecha de registro: 2026-11-16 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Crear la cabecera central de configuracion, lectura, deltas y publicacion de los seis HPM de CVA6.
-# SHA256 del archivo resultante: 334f63f2e144ab51a8c82d305e23150cb9b720daa5d43f0564f88a890b89c70b
+# Cambios acumulados: Configurar, leer y publicar los seis HPM de CVA6; emitir JSON en el host, cerrar la guarda de inclusion y seleccionar el grupo B de actividad.
+# SHA256 del archivo resultante: e70ac5daca0e666e37048a8e9b424bd7f2527a074f1be751cac4f28786feb023
+# Modificacion 2026-11-16: actualizar el registro con la salida JSON por paso y el cierre de la guarda de inclusion.
+# Modificacion 2026-11-16: sustituir el grupo A {1,2,10,14,15,22} por B {5,6,9,10,20,21}; actualizar comentarios. Sin cambios de la API ni del RTL.
 
 diff --git a/src/common/cva6_profile.h b/src/common/cva6_profile.h
 new file mode 100644
-index 0000000..f97a125
+index 0000000..b32e847
 --- /dev/null
 +++ b/src/common/cva6_profile.h
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,273 @@
 +#ifndef RSHARC_CVA6_PROFILE_H
 +#define RSHARC_CVA6_PROFILE_H
 +
@@ -29,17 +31,17 @@ index 0000000..f97a125
 +#endif
 +
 +/*
-+ * Grupo A.
++ * Grupo B: actividad.
 + *
-+ * events[0] -> mhpmcounter3 -> evento 1:  refill de instrucciones
-+ * events[1] -> mhpmcounter4 -> evento 2:  MSHR de lectura de datos
-+ * events[2] -> mhpmcounter5 -> evento 10: prediccion incorrecta
-+ * events[3] -> mhpmcounter6 -> evento 14: scoreboard lleno
-+ * events[4] -> mhpmcounter7 -> evento 15: frontend sin instruccion valida
-+ * events[5] -> mhpmcounter8 -> evento 22: senal de dependencia RAW
++ * events[0] -> mhpmcounter3 -> evento 5:  ciclos con retirada LOAD
++ * events[1] -> mhpmcounter4 -> evento 6:  ciclos con retirada STORE
++ * events[2] -> mhpmcounter5 -> evento 9:  ciclos con retirada CTRL_FLOW
++ * events[3] -> mhpmcounter6 -> evento 10: prediccion incorrecta
++ * events[4] -> mhpmcounter7 -> evento 20: ciclos con retirada ALU/MULT
++ * events[5] -> mhpmcounter8 -> evento 21: ciclos con retirada FP
 + */
 +static const uint64_t cva6_profile_event_ids[6] = {
-+    1, 2, 10, 14, 15, 22
++    5, 6, 9, 10, 20, 21
 +};
 +
 +/*
@@ -243,5 +245,43 @@ index 0000000..f97a125
 +        reserved[0] = CVA6_PROFILE_MAGIC;
 +    }
 +}
++/*
++ * Solo se incluye al compilar el puente del simulador en el host.
++ * Escribe una linea JSON por paso completado.
++ */
++#ifdef RSHARC_CVA6_PROFILE_HOST
++#include <stdio.h>
 +
-+#endif
++static inline void cva6_profile_log(
++    FILE *stream,
++    uint64_t k,
++    uint64_t cycles,
++    uint64_t instret,
++    const uint64_t reserved[7])
++{
++    if (reserved[0] != CVA6_PROFILE_MAGIC) return;
++
++    fprintf(stream,
++        "RSHARC_HPM_V1 {\"schema\":1,\"k\":%llu,"
++        "\"cycles\":%llu,\"instret\":%llu,\"event_ids\":[",
++        (unsigned long long)k,
++        (unsigned long long)cycles,
++        (unsigned long long)instret);
++
++    for (unsigned i = 0; i < 6; ++i) {
++        fprintf(stream, "%s%llu", i ? "," : "",
++                (unsigned long long)cva6_profile_event_ids[i]);
++    }
++
++    fputs("],\"counts\":[", stream);
++
++    for (unsigned i = 0; i < 6; ++i) {
++        fprintf(stream, "%s%llu", i ? "," : "",
++                (unsigned long long)reserved[i + 1]);
++    }
++
++    fputs("]}\n", stream);
++    fflush(stream);
++}
++#endif /* RSHARC_CVA6_PROFILE_HOST */
++#endif /* RSHARC_CVA6_PROFILE_H */
