@@ -192,6 +192,45 @@ static inline cva6_profile_sample cva6_profile_delta(
     return result;
 }
 
+/* Acumulados por paso. Las lecturas de entrada son locales a cada llamada. */
+enum { CP_LSQ, CP_H12, CP_DOT, CP_AXPY, CP_MODEL_JAC, CP_REGION_COUNT };
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern cva6_profile_sample cp_totals[CP_REGION_COUNT];
+extern uint64_t cp_calls[CP_REGION_COUNT];
+#ifdef __cplusplus
+}
+#endif
+
+static inline void cp_accumulate(unsigned region, cva6_profile_sample delta)
+{
+#if CVA6_PROFILE_ACTIVE
+    if (!delta.available) return;
+    cp_totals[region].available = 1;
+    cp_totals[region].cycles += delta.cycles;
+    cp_totals[region].instret += delta.instret;
+    for (unsigned i = 0; i < 6; ++i)
+        cp_totals[region].events[i] += delta.events[i];
+    ++cp_calls[region];
+#else
+    (void)region;
+    (void)delta;
+#endif
+}
+
+/* Descriptor en reserved: marca, direccion fisica, tamano; sin cambiar mailbox. */
+#define CVA6_REGION_MAGIC UINT64_C(0x5253485245473031)
+typedef struct {
+    uint64_t schema;
+    uint64_t k;
+    uint64_t event_ids[6];
+    cva6_profile_sample global;
+    cva6_profile_sample regions[CP_REGION_COUNT];
+    uint64_t calls[CP_REGION_COUNT];
+} cva6_region_packet;
+
 /*
  * Detener los seis HPM al finalizar el estudio.
  * mcycle y minstret continuan contando.
@@ -237,6 +276,41 @@ static inline void cva6_profile_publish(
  */
 #ifdef RSHARC_CVA6_PROFILE_HOST
 #include <stdio.h>
+
+static inline void cva6_region_log(FILE *stream, const cva6_region_packet *packet)
+{
+    static const char *names[CP_REGION_COUNT] = {
+        "lsq", "h12", "h12_dot", "h12_axpy", "model_jac"
+    };
+    for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
+        const cva6_profile_sample *sample = &packet->regions[r];
+        fprintf(stream,
+            "RSHARC_REGION_HPM_V1 {\"schema\":1,\"k\":%llu,"
+            "\"region\":\"%s\",\"available\":%llu,\"calls\":%llu,"
+            "\"cycles\":%llu,\"instret\":%llu,\"mpc_cycles\":%llu,"
+            "\"mpc_instret\":%llu,\"cycles_percent\":",
+            (unsigned long long)packet->k, names[r],
+            (unsigned long long)sample->available,
+            (unsigned long long)packet->calls[r],
+            (unsigned long long)sample->cycles,
+            (unsigned long long)sample->instret,
+            (unsigned long long)packet->global.cycles,
+            (unsigned long long)packet->global.instret);
+        if (sample->available && packet->global.cycles)
+            fprintf(stream, "%.6f", 100.0 * sample->cycles / packet->global.cycles);
+        else fputs("null", stream);
+        fputs(",\"event_ids\":[", stream);
+        for (unsigned i = 0; i < 6; ++i)
+            fprintf(stream, "%s%llu", i ? "," : "",
+                    (unsigned long long)packet->event_ids[i]);
+        fputs("],\"counts\":[", stream);
+        for (unsigned i = 0; i < 6; ++i)
+            fprintf(stream, "%s%llu", i ? "," : "",
+                    (unsigned long long)sample->events[i]);
+        fputs("]}\n", stream);
+    }
+    fflush(stream);
+}
 
 static inline void cva6_profile_log(
     FILE *stream,

@@ -184,12 +184,13 @@ $(ACC_CONFIG): $(CONFIG) FORCE
 	$(Q)if cmp -s "$@.tmp" "$@"; then rm -f "$@.tmp"; else mv "$@.tmp" "$@"; fi
 
 # Cada parche se aplica una vez sobre una copia nueva, nunca sobre external/.
-$(LIBMPC_STAMP): $(LIBMPC_INPUTS) scripts/patches/libmpc-baremetal.patch Makefile
+$(LIBMPC_STAMP): $(LIBMPC_INPUTS) scripts/patches/libmpc-baremetal.patch scripts/patches/libmpc-regions.patch Makefile
 	@printf '%s\n' 'PREPARE libmpc'
 	$(Q)rm -rf -- "$(LIBMPC_DIR)"
 	$(Q)mkdir -p "$(LIBMPC_DIR)"
 	$(Q)cp -R external/libmpc/include "$(LIBMPC_DIR)/"
 	$(Q)"$(PATCH)" --batch --fuzz=0 -p1 -d "$(LIBMPC_DIR)" -i "$(CURDIR)/scripts/patches/libmpc-baremetal.patch"
+	$(Q)"$(PATCH)" --batch --fuzz=0 -p1 -d "$(LIBMPC_DIR)" -i "$(CURDIR)/scripts/patches/libmpc-regions.patch"
 	$(Q)touch "$@"
 
 $(OSQP_STAMP): $(OSQP_INPUTS) scripts/patches/osqp-baremetal.patch Makefile
@@ -250,6 +251,12 @@ NLOPT_BUILD := $(BUILD)/nlopt
 NLOPT_LIB := $(NLOPT_BUILD)/libnlopt.a
 NLOPT_CONFIGURED := $(NLOPT_BUILD)/.configured
 NLOPT_INPUTS := $(shell find external/nlopt -type f)
+NLOPT_SOURCE := $(CURDIR)/external/nlopt
+NLOPT_CFLAGS := $(ARCH_FLAGS) $(FP_FLAGS)
+ifeq ($(PROFILE),verilator)
+NLOPT_SOURCE := $(BUILD)/nlopt-src
+NLOPT_CFLAGS += -I$(CURDIR)/src/common -DRSHARC_CVA6_PROFILE_ENABLE=1
+endif
 
 NLOPT_PLATFORM := -DCMAKE_SYSTEM_NAME=Linux
 ifneq ($(PROFILE),x86)
@@ -259,14 +266,20 @@ endif
 .PHONY: nlopt
 nlopt: $(NLOPT_LIB)
 
-$(NLOPT_CONFIGURED): $(CONFIG) Makefile external/nlopt/CMakeLists.txt
+$(NLOPT_CONFIGURED): $(CONFIG) Makefile external/nlopt/CMakeLists.txt $(if $(filter verilator,$(PROFILE)),$(NLOPT_INPUTS) scripts/patches/nlopt-regions.patch src/common/cva6_profile.h,)
 	@printf 'CONFIGURE NLopt (%s)\n' "$(PROFILE)"
 	$(Q)rm -rf -- "$(NLOPT_BUILD)"
-	$(Q)"$(CMAKE)" -S external/nlopt -B "$(NLOPT_BUILD)" -G "Unix Makefiles" \
+ifeq ($(PROFILE),verilator)
+	$(Q)rm -rf -- "$(NLOPT_SOURCE)"
+	$(Q)mkdir -p "$(NLOPT_SOURCE)"
+	$(Q)cp -R external/nlopt/. "$(NLOPT_SOURCE)/"
+	$(Q)"$(PATCH)" --batch --fuzz=0 -p1 -d "$(NLOPT_SOURCE)" -i "$(CURDIR)/scripts/patches/nlopt-regions.patch"
+endif
+	$(Q)"$(CMAKE)" -S "$(NLOPT_SOURCE)" -B "$(NLOPT_BUILD)" -G "Unix Makefiles" \
 	  $(NLOPT_PLATFORM) \
 	  -DCMAKE_C_COMPILER="$(RV_CC)" -DCMAKE_CXX_COMPILER="$(RV_CXX)" \
 	  -DCMAKE_BUILD_TYPE=Release \
-	  -DCMAKE_C_FLAGS="$(ARCH_FLAGS) $(FP_FLAGS)" \
+	  -DCMAKE_C_FLAGS="$(NLOPT_CFLAGS)" \
 	  -DCMAKE_CXX_FLAGS="$(ARCH_FLAGS) $(FP_FLAGS)" \
 	  -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
 	  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
@@ -328,6 +341,7 @@ endif
 ifeq ($(PROFILE),verilator)
 CARTPOLE_DEFINES += -DRSHARC_BAREMETAL_DISABLE_CONSOLE -DRSHARC_CARTPOLE_CVA6_CHANNEL
 CARTPOLE_DEFINES += -DRSHARC_CVA6_PROFILE_ENABLE=1
+CARTPOLE_INCLUDES := $(filter-out -Iexternal/libmpc/include,$(CARTPOLE_INCLUDES)) -I"$(LIBMPC_DIR)/include"
 endif
 CARTPOLE_OBJECTS := $(addprefix $(CARTPOLE_DIR)/obj/,$(addsuffix .o,$(basename $(CARTPOLE_SOURCES))))
 
@@ -350,7 +364,7 @@ $(CARTPOLE_CONFIG_HEADER): src/cartpole/config.json Makefile
 	$(Q)$(PYTHON) -c 'import json,sys; print("#pragma once\nnamespace rsharc_cartpole { inline constexpr char config_json[] = " + json.dumps(sys.stdin.read()) + "; }")' < "$<" > "$@.tmp"
 	$(Q)mv "$@.tmp" "$@"
 
-$(CARTPOLE_OBJECTS): $(CARTPOLE_CONFIG_HEADER) $(CARTPOLE_CONFIG) $(NLOPT_LIB) Makefile
+$(CARTPOLE_OBJECTS): $(CARTPOLE_CONFIG_HEADER) $(CARTPOLE_CONFIG) $(NLOPT_LIB) $(if $(filter verilator,$(PROFILE)),$(LIBMPC_STAMP),) Makefile
 
 $(CARTPOLE_DIR)/obj/%.o: %.cpp
 	@printf 'CXX %s\n' "$<"

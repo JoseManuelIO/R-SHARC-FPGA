@@ -1,14 +1,14 @@
 # Archivo: src/cartpole/main.cpp
-# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Fecha de registro: 2026-11-19 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Configurar, medir y publicar los HPM por paso; conservar los comentarios del usuario y las ramas x86/Spike.
-# SHA256 del archivo resultante: 5f34a23cdd74d23179aa16d255b5f8cfabe0530596d9d11223a962ec9839ddee
+# Cambios acumulados: Medida global y cinco acumuladores por paso; publicar paquete de regiones mediante el canal existente.
+# SHA256 del archivo resultante: 0c444bf16ce30a25aa49c5ebeb1ce4acd16e208404b6de3ba8026c20b45802ea
 
 diff --git a/src/cartpole/main.cpp b/src/cartpole/main.cpp
-index d6f5b14..4304c11 100644
+index d6f5b14..8e03fe9 100644
 --- a/src/cartpole/main.cpp
 +++ b/src/cartpole/main.cpp
-@@ -7,6 +7,7 @@
+@@ -7,11 +7,19 @@
  #include "cartpole_channel.hpp"
  #include "cartpole_config.hpp"
  #include "debug_levels.hpp"
@@ -16,7 +16,19 @@ index d6f5b14..4304c11 100644
  
  DebugLevels global_debug_levels;
  
-@@ -40,18 +41,47 @@ static bool receive(CartpoleStepInput& input) {
++extern "C" {
++cva6_profile_sample cp_totals[CP_REGION_COUNT] = {};
++uint64_t cp_calls[CP_REGION_COUNT] = {};
++}
++
+ #ifdef RSHARC_CARTPOLE_CVA6_CHANNEL
+ extern "C" { alignas(64) volatile CartpoleMailbox rsharc_cartpole_mailbox{}; }
++alignas(64) static volatile cva6_region_packet region_packet;
++static_assert(sizeof(cva6_region_packet) == 536);
+ extern "C" std::size_t rsharc_heap_high_water();
+ extern "C" std::size_t rsharc_heap_capacity();
+ 
+@@ -40,18 +48,67 @@ static bool receive(CartpoleStepInput& input) {
    exchange_end(previous);
    return true;
  }
@@ -38,6 +50,16 @@ index d6f5b14..4304c11 100644
 +    const CartpoleStepOutput& output,
 +    const cva6_profile_sample& profile)
 +{
++  cva6_region_packet packet{};
++  packet.schema = 1;
++  packet.k = output.k;
++  packet.global = profile;
++  for (unsigned i = 0; i < 6; ++i)
++    packet.event_ids[i] = cva6_profile_event_ids[i];
++  for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
++    packet.regions[r] = cp_totals[r];
++    packet.calls[r] = cp_calls[r];
++  }
    const auto previous = exchange_begin();
 +
    const auto* src = reinterpret_cast<const unsigned char*>(&output);
@@ -50,7 +72,17 @@ index d6f5b14..4304c11 100644
 +    dst[i] = src[i];
 +  }
 +
-+  cva6_profile_publish(rsharc_cartpole_mailbox.reserved, &profile);
++  // La RAM del runner es write-through; publicar la copia con bypass activo.
++  const auto* packet_src = reinterpret_cast<const unsigned char*>(&packet);
++  auto* packet_dst = reinterpret_cast<volatile unsigned char*>(&region_packet);
++  for (std::size_t i = 0; i < sizeof(packet); ++i)
++    packet_dst[i] = packet_src[i];
++  for (unsigned i = 0; i < 7; ++i)
++    rsharc_cartpole_mailbox.reserved[i] = 0;
++  rsharc_cartpole_mailbox.reserved[1] =
++      reinterpret_cast<std::uintptr_t>(&region_packet);
++  rsharc_cartpole_mailbox.reserved[2] = sizeof(packet);
++  rsharc_cartpole_mailbox.reserved[0] = CVA6_REGION_MAGIC;
 +
    asm volatile("fence rw,rw" ::: "memory");
    rsharc_cartpole_mailbox.state = 3;
@@ -67,7 +99,7 @@ index d6f5b14..4304c11 100644
  #elif defined(__riscv)
  extern "C" volatile std::uint64_t tohost, fromhost;
  extern "C" std::size_t rsharc_heap_high_water();
-@@ -77,14 +107,33 @@ static bool transfer(std::uint64_t operation, void* data, std::size_t size) {
+@@ -77,14 +134,33 @@ static bool transfer(std::uint64_t operation, void* data, std::size_t size) {
    return true;
  }
  static bool receive(CartpoleStepInput& input) { return transfer(63, &input, sizeof(input)); }
@@ -104,7 +136,7 @@ index d6f5b14..4304c11 100644
  #endif
  
  static std::uint64_t cycle() {
-@@ -122,6 +171,11 @@ int main() {
+@@ -122,6 +198,11 @@ int main() {
      mpc::Logger::instance().setLevel(mpc::Logger::log_level::NONE);
      const auto config = nlohmann::json::parse(rsharc_cartpole::config_json);
      auto controller = std::make_unique<CartpoleServiceController>(config);
@@ -116,7 +148,7 @@ index d6f5b14..4304c11 100644
      for (std::uint64_t k = 0; k < RSHARC_CARTPOLE_MAX_STEPS; ++k) {
        CartpoleStepInput input{};
        if (!receive(input) || input.k != k || !std::isfinite(input.t)) return 88;
-@@ -135,9 +189,28 @@ int main() {
+@@ -135,9 +216,33 @@ int main() {
        disturbance(0) = input.w[0];
        previous(0) = input.u_previous[0];
        controller->seedControl(previous);
@@ -125,6 +157,11 @@ index d6f5b14..4304c11 100644
 +      // const auto i1 = instret(), c1 = cycle();
 +      //Inicio cambio contadores de eventos
 +#if CVA6_PROFILE_ACTIVE
++      for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
++        cp_totals[r] = {};
++        cp_totals[r].available = 1;
++        cp_calls[r] = 0;
++      }
 +      const auto profile_begin = cva6_profile_read();
 +#else
        const auto c0 = cycle(), i0 = instret();
@@ -146,7 +183,7 @@ index d6f5b14..4304c11 100644
        const auto control = controller->getLatestControl();
        if (!control.allFinite()) return 90;
        const auto metadata = controller->getLatestMetadata();
-@@ -148,14 +221,25 @@ int main() {
+@@ -148,14 +253,25 @@ int main() {
        output.cost_available = metadata.at("cost_available").get<bool>();
        output.u = control(0);
        if (output.cost_available) output.cost = metadata.at("cost").get<double>();

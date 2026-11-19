@@ -13,6 +13,8 @@
 #include <unistd.h>
 
 class MPCBridge {
+  unsigned char* ram_base;
+  std::size_t ram_size;
   unsigned char* mailbox;
   int request_fd, response_fd;
   bool cartpole;
@@ -37,7 +39,7 @@ class MPCBridge {
     return value;
   }
  public:
-  MPCBridge(unsigned char* ram, std::size_t size) {
+  MPCBridge(unsigned char* ram, std::size_t size) : ram_base(ram), ram_size(size) {
     const char* controller = std::getenv("MPC_CONTROLLER");
     if (!controller || (std::strcmp(controller, "acc") && std::strcmp(controller, "cartpole")))
       throw std::runtime_error("MPC_CONTROLLER must be acc or cartpole");
@@ -95,6 +97,26 @@ class MPCBridge {
             mailbox + offsetof(CartpoleMailbox, reserved),
             sizeof(reserved));
 
+        if (reserved[0] == CVA6_REGION_MAGIC) {
+          const auto address = reserved[1];
+          if (reserved[2] != sizeof(cva6_region_packet) || address % 64 ||
+              address < 0x80000000ULL || ram_size < sizeof(cva6_region_packet) ||
+              address - 0x80000000ULL > ram_size - sizeof(cva6_region_packet))
+            throw std::runtime_error("Invalid MPC region packet address/size");
+          cva6_region_packet packet{};
+          std::memcpy(&packet, ram_base + address - 0x80000000ULL, sizeof(packet));
+          if (packet.schema != 1 || packet.k != decoded.k ||
+              packet.global.available != 1 || packet.global.cycles != decoded.cycles ||
+              packet.global.instret != decoded.instret)
+            throw std::runtime_error("Invalid MPC region packet schema/step/global");
+          for (unsigned i = 0; i < 6; ++i) {
+            if (packet.event_ids[i] != cva6_profile_event_ids[i])
+              throw std::runtime_error("MPC region event selectors mismatch");
+            reserved[i + 1] = packet.global.events[i];
+          }
+          reserved[0] = CVA6_PROFILE_MAGIC;
+          cva6_region_log(stderr, &packet);
+        }
         cva6_profile_log(
             stderr,
             decoded.k,

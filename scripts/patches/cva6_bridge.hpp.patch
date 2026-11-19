@@ -1,11 +1,11 @@
 # Archivo: scripts/cva6_bridge.hpp
-# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Fecha de registro: 2026-11-19 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Recoger los seis HPM publicados por CartPole y registrar cada paso en console.log.
-# SHA256 del archivo resultante: cbd7064c1ab31f9c20123722b89abf76f17b9d697eab6254e89969a450600334
+# Cambios acumulados: Validar paquete de regiones y escribir resultados y porcentaje sobre MPC; conservar protocolo HPM anterior.
+# SHA256 del archivo resultante: 463adcaaa15320b4972e03ef0bdf11693e4d1b1669bdd57e6695427fba2815fe
 
 diff --git a/scripts/cva6_bridge.hpp b/scripts/cva6_bridge.hpp
-index 5dc4218..0b832cd 100644
+index 5dc4218..c52556d 100644
 --- a/scripts/cva6_bridge.hpp
 +++ b/scripts/cva6_bridge.hpp
 @@ -2,6 +2,8 @@
@@ -17,7 +17,25 @@ index 5dc4218..0b832cd 100644
  #include <cstdio>
  #include <limits>
  #include <cerrno>
-@@ -81,6 +83,25 @@ class MPCBridge {
+@@ -11,6 +13,8 @@
+ #include <unistd.h>
+ 
+ class MPCBridge {
++  unsigned char* ram_base;
++  std::size_t ram_size;
+   unsigned char* mailbox;
+   int request_fd, response_fd;
+   bool cartpole;
+@@ -35,7 +39,7 @@ class MPCBridge {
+     return value;
+   }
+  public:
+-  MPCBridge(unsigned char* ram, std::size_t size) {
++  MPCBridge(unsigned char* ram, std::size_t size) : ram_base(ram), ram_size(size) {
+     const char* controller = std::getenv("MPC_CONTROLLER");
+     if (!controller || (std::strcmp(controller, "acc") && std::strcmp(controller, "cartpole")))
+       throw std::runtime_error("MPC_CONTROLLER must be acc or cartpole");
+@@ -81,6 +85,45 @@ class MPCBridge {
        std::uint64_t index;
        std::memcpy(&index, output, sizeof(index));
        if (index != responses) throw std::runtime_error("MPC response sequence");
@@ -33,6 +51,26 @@ index 5dc4218..0b832cd 100644
 +            mailbox + offsetof(CartpoleMailbox, reserved),
 +            sizeof(reserved));
 +
++        if (reserved[0] == CVA6_REGION_MAGIC) {
++          const auto address = reserved[1];
++          if (reserved[2] != sizeof(cva6_region_packet) || address % 64 ||
++              address < 0x80000000ULL || ram_size < sizeof(cva6_region_packet) ||
++              address - 0x80000000ULL > ram_size - sizeof(cva6_region_packet))
++            throw std::runtime_error("Invalid MPC region packet address/size");
++          cva6_region_packet packet{};
++          std::memcpy(&packet, ram_base + address - 0x80000000ULL, sizeof(packet));
++          if (packet.schema != 1 || packet.k != decoded.k ||
++              packet.global.available != 1 || packet.global.cycles != decoded.cycles ||
++              packet.global.instret != decoded.instret)
++            throw std::runtime_error("Invalid MPC region packet schema/step/global");
++          for (unsigned i = 0; i < 6; ++i) {
++            if (packet.event_ids[i] != cva6_profile_event_ids[i])
++              throw std::runtime_error("MPC region event selectors mismatch");
++            reserved[i + 1] = packet.global.events[i];
++          }
++          reserved[0] = CVA6_PROFILE_MAGIC;
++          cva6_region_log(stderr, &packet);
++        }
 +        cva6_profile_log(
 +            stderr,
 +            decoded.k,

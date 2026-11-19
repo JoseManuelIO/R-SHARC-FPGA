@@ -1,0 +1,54 @@
+# Archivo de la copia: include/mpc/NLMPC/Constraints.hpp
+# Fecha: 2026-11-19
+# Aplicar con patch -p1 sobre la copia bajo build/; external/ permanece intacto.
+# SHA256 original: e5bd5a3d8d5d07729047bcceffab3dc4b51066079d408d9370567e0ffafb6c1a
+# SHA256 resultante: 4692526573083574acee64e4ce13f5309fbf5bf7cffa25b31205c3e0a7eb9c52
+
+--- a/include/mpc/NLMPC/Constraints.hpp
++++ b/include/mpc/NLMPC/Constraints.hpp
+@@ -5,6 +5,9 @@
+ #pragma once
+ 
+ #include <mpc/NLMPC/Base.hpp>
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
++#include "cva6_profile.h"
++#endif
+ 
+ namespace mpc
+ {
+@@ -858,6 +861,9 @@
+             // vector.
+             cvec<sizer.nx> Xa = x0.cwiseAbs().cwiseMax(1.0);
+ 
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
++            const auto jx_begin = cva6_profile_read();
++#endif
+             // Compute Jx using central difference method
+             for (size_t i = 0; i < nx(); i++)
+             {
+@@ -880,8 +886,14 @@
+                 Jx.col(i) = df;
+             }
+ 
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
++            cp_accumulate(CP_MODEL_JAC, cva6_profile_delta(jx_begin, cva6_profile_read()));
++#endif
+             cvec<sizer.nu> Ua = u0.cwiseAbs().cwiseMax(1.0);
+ 
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
++            const auto jmv_begin = cva6_profile_read();
++#endif
+             // Compute Jmv using central difference method
+             for (size_t i = 0; i < nu(); i++)
+             {
+@@ -903,6 +915,10 @@
+                 cvec<sizer.nx> df = (f_plus - f_minus) / (2 * du);
+                 Jmv.col(i) = df;
+             }
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
++            cp_accumulate(CP_MODEL_JAC, cva6_profile_delta(jmv_begin, cva6_profile_read()));
++#endif
++
+         }
+ 
+         cvec<sizer.ph * sizer.nx> ceq;

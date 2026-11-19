@@ -11,8 +11,15 @@
 
 DebugLevels global_debug_levels;
 
+extern "C" {
+cva6_profile_sample cp_totals[CP_REGION_COUNT] = {};
+uint64_t cp_calls[CP_REGION_COUNT] = {};
+}
+
 #ifdef RSHARC_CARTPOLE_CVA6_CHANNEL
 extern "C" { alignas(64) volatile CartpoleMailbox rsharc_cartpole_mailbox{}; }
+alignas(64) static volatile cva6_region_packet region_packet;
+static_assert(sizeof(cva6_region_packet) == 536);
 extern "C" std::size_t rsharc_heap_high_water();
 extern "C" std::size_t rsharc_heap_capacity();
 
@@ -58,6 +65,16 @@ static bool send(
     const CartpoleStepOutput& output,
     const cva6_profile_sample& profile)
 {
+  cva6_region_packet packet{};
+  packet.schema = 1;
+  packet.k = output.k;
+  packet.global = profile;
+  for (unsigned i = 0; i < 6; ++i)
+    packet.event_ids[i] = cva6_profile_event_ids[i];
+  for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
+    packet.regions[r] = cp_totals[r];
+    packet.calls[r] = cp_calls[r];
+  }
   const auto previous = exchange_begin();
 
   const auto* src = reinterpret_cast<const unsigned char*>(&output);
@@ -68,7 +85,17 @@ static bool send(
     dst[i] = src[i];
   }
 
-  cva6_profile_publish(rsharc_cartpole_mailbox.reserved, &profile);
+  // La RAM del runner es write-through; publicar la copia con bypass activo.
+  const auto* packet_src = reinterpret_cast<const unsigned char*>(&packet);
+  auto* packet_dst = reinterpret_cast<volatile unsigned char*>(&region_packet);
+  for (std::size_t i = 0; i < sizeof(packet); ++i)
+    packet_dst[i] = packet_src[i];
+  for (unsigned i = 0; i < 7; ++i)
+    rsharc_cartpole_mailbox.reserved[i] = 0;
+  rsharc_cartpole_mailbox.reserved[1] =
+      reinterpret_cast<std::uintptr_t>(&region_packet);
+  rsharc_cartpole_mailbox.reserved[2] = sizeof(packet);
+  rsharc_cartpole_mailbox.reserved[0] = CVA6_REGION_MAGIC;
 
   asm volatile("fence rw,rw" ::: "memory");
   rsharc_cartpole_mailbox.state = 3;
@@ -194,6 +221,11 @@ int main() {
       // const auto i1 = instret(), c1 = cycle();
       //Inicio cambio contadores de eventos
 #if CVA6_PROFILE_ACTIVE
+      for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
+        cp_totals[r] = {};
+        cp_totals[r].available = 1;
+        cp_calls[r] = 0;
+      }
       const auto profile_begin = cva6_profile_read();
 #else
       const auto c0 = cycle(), i0 = instret();

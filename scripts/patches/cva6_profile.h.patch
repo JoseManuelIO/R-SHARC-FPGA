@@ -1,17 +1,15 @@
 # Archivo: src/common/cva6_profile.h
-# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Fecha de registro: 2026-11-19 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Configurar, leer y publicar los seis HPM de CVA6; emitir JSON en el host, cerrar la guarda de inclusion y seleccionar el grupo B de actividad.
-# SHA256 del archivo resultante: e70ac5daca0e666e37048a8e9b424bd7f2527a074f1be751cac4f28786feb023
-# Modificacion 2026-11-16: actualizar el registro con la salida JSON por paso y el cierre de la guarda de inclusion.
-# Modificacion 2026-11-16: sustituir el grupo A {1,2,10,14,15,22} por B {5,6,9,10,20,21}; actualizar comentarios. Sin cambios de la API ni del RTL.
+# Cambios acumulados: Lecturas HPM existentes, acumulacion de cinco regiones y salida JSON con porcentajes; grupo B conservado.
+# SHA256 del archivo resultante: 815c456d1cdb4423e316af9f3fe5be0823cc132439d4a9fe74e27e058e1c56b5
 
 diff --git a/src/common/cva6_profile.h b/src/common/cva6_profile.h
 new file mode 100644
-index 0000000..b32e847
+index 0000000..8d078f7
 --- /dev/null
 +++ b/src/common/cva6_profile.h
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,347 @@
 +#ifndef RSHARC_CVA6_PROFILE_H
 +#define RSHARC_CVA6_PROFILE_H
 +
@@ -206,6 +204,45 @@ index 0000000..b32e847
 +    return result;
 +}
 +
++/* Acumulados por paso. Las lecturas de entrada son locales a cada llamada. */
++enum { CP_LSQ, CP_H12, CP_DOT, CP_AXPY, CP_MODEL_JAC, CP_REGION_COUNT };
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++extern cva6_profile_sample cp_totals[CP_REGION_COUNT];
++extern uint64_t cp_calls[CP_REGION_COUNT];
++#ifdef __cplusplus
++}
++#endif
++
++static inline void cp_accumulate(unsigned region, cva6_profile_sample delta)
++{
++#if CVA6_PROFILE_ACTIVE
++    if (!delta.available) return;
++    cp_totals[region].available = 1;
++    cp_totals[region].cycles += delta.cycles;
++    cp_totals[region].instret += delta.instret;
++    for (unsigned i = 0; i < 6; ++i)
++        cp_totals[region].events[i] += delta.events[i];
++    ++cp_calls[region];
++#else
++    (void)region;
++    (void)delta;
++#endif
++}
++
++/* Descriptor en reserved: marca, direccion fisica, tamano; sin cambiar mailbox. */
++#define CVA6_REGION_MAGIC UINT64_C(0x5253485245473031)
++typedef struct {
++    uint64_t schema;
++    uint64_t k;
++    uint64_t event_ids[6];
++    cva6_profile_sample global;
++    cva6_profile_sample regions[CP_REGION_COUNT];
++    uint64_t calls[CP_REGION_COUNT];
++} cva6_region_packet;
++
 +/*
 + * Detener los seis HPM al finalizar el estudio.
 + * mcycle y minstret continuan contando.
@@ -251,6 +288,41 @@ index 0000000..b32e847
 + */
 +#ifdef RSHARC_CVA6_PROFILE_HOST
 +#include <stdio.h>
++
++static inline void cva6_region_log(FILE *stream, const cva6_region_packet *packet)
++{
++    static const char *names[CP_REGION_COUNT] = {
++        "lsq", "h12", "h12_dot", "h12_axpy", "model_jac"
++    };
++    for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
++        const cva6_profile_sample *sample = &packet->regions[r];
++        fprintf(stream,
++            "RSHARC_REGION_HPM_V1 {\"schema\":1,\"k\":%llu,"
++            "\"region\":\"%s\",\"available\":%llu,\"calls\":%llu,"
++            "\"cycles\":%llu,\"instret\":%llu,\"mpc_cycles\":%llu,"
++            "\"mpc_instret\":%llu,\"cycles_percent\":",
++            (unsigned long long)packet->k, names[r],
++            (unsigned long long)sample->available,
++            (unsigned long long)packet->calls[r],
++            (unsigned long long)sample->cycles,
++            (unsigned long long)sample->instret,
++            (unsigned long long)packet->global.cycles,
++            (unsigned long long)packet->global.instret);
++        if (sample->available && packet->global.cycles)
++            fprintf(stream, "%.6f", 100.0 * sample->cycles / packet->global.cycles);
++        else fputs("null", stream);
++        fputs(",\"event_ids\":[", stream);
++        for (unsigned i = 0; i < 6; ++i)
++            fprintf(stream, "%s%llu", i ? "," : "",
++                    (unsigned long long)packet->event_ids[i]);
++        fputs("],\"counts\":[", stream);
++        for (unsigned i = 0; i < 6; ++i)
++            fprintf(stream, "%s%llu", i ? "," : "",
++                    (unsigned long long)sample->events[i]);
++        fputs("]}\n", stream);
++    }
++    fflush(stream);
++}
 +
 +static inline void cva6_profile_log(
 +    FILE *stream,
