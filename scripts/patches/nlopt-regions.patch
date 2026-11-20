@@ -1,8 +1,8 @@
 # Archivo de la copia: src/algs/slsqp/slsqp.c
-# Fecha: 2026-11-19
-# Aplicar con patch -p1 sobre la copia bajo build/; external/ permanece intacto.
+# Fecha: 2026-11-20
+# Modos: off, cycles, full. Aplicar con patch -p1 sobre build/.
 # SHA256 original: 6d3f7acf5ca27bc3c763ae841d6f3beadccb7955f620dd183684603ca058a0c0
-# SHA256 resultante: e278aeb29bd46bae06a822a30dd77f92c7cf71b1a8d948742cc8c46be73731a1
+# SHA256 resultante: 5271d70c750302a15b8c4fd872cc52442b04e82a445b53ca08f9ac7797de33a6
 
 --- a/src/algs/slsqp/slsqp.c
 +++ b/src/algs/slsqp/slsqp.c
@@ -20,8 +20,8 @@
  		 int *m, double *u, const int *iue, double *up, 
  		 double *c__, const int *ice, const int *icv, const int *ncv)
  {
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+    cva6_profile_sample h12_begin = cva6_profile_read();
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++    cp_region_sample h12_begin = cp_region_read();
 +#endif
      /* Initialized data */
  
@@ -30,16 +30,16 @@
  	i4 = i3;
  	sm = c__[i2] * *up;
  	i__2 = *m;
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+        cva6_profile_sample dot_begin = cva6_profile_read();
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++        cp_region_sample dot_begin = cp_region_read();
 +#endif
  	for (i__ = *l1; i__ <= i__2; ++i__) {
  	    sm += c__[i3] * u[i__ * u_dim1 + 1];
  /* L50: */
  	    i3 += *ice;
  	}
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+        cp_accumulate(CP_DOT, cva6_profile_delta(dot_begin, cva6_profile_read()));
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++        cp_accumulate(CP_DOT, cp_region_delta(dot_begin, cp_region_read()));
 +#endif
  	if (sm == 0.0) {
  	    goto L70;
@@ -47,23 +47,23 @@
  	sm *= b;
  	c__[i2] += sm * *up;
  	i__2 = *m;
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+        cva6_profile_sample axpy_begin = cva6_profile_read();
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++        cp_region_sample axpy_begin = cp_region_read();
 +#endif
  	for (i__ = *l1; i__ <= i__2; ++i__) {
  	    c__[i4] += sm * u[i__ * u_dim1 + 1];
  /* L60: */
  	    i4 += *ice;
  	}
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+        cp_accumulate(CP_AXPY, cva6_profile_delta(axpy_begin, cva6_profile_read()));
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++        cp_accumulate(CP_AXPY, cp_region_delta(axpy_begin, cp_region_read()));
 +#endif
  L70:
  	;
      }
  L80:
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+    cp_accumulate(CP_H12, cva6_profile_delta(h12_begin, cva6_profile_read()));
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++    cp_accumulate(CP_H12, cp_region_delta(h12_begin, cp_region_read()));
 +#endif
      return;
  } /* h12_ */
@@ -72,8 +72,8 @@
  	b, const double *xl, const double *xu, double *x, double *y, 
  	double *w, int *jw, int *mode)
  {
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+    cva6_profile_sample lsq_begin = cva6_profile_read();
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++    cp_region_sample lsq_begin = cp_region_read();
 +#endif
      /* Initialized data */
  
@@ -82,8 +82,8 @@
  	}
      }
  /*   END OF SUBROUTINE LSQ */
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+    cp_accumulate(CP_LSQ, cva6_profile_delta(lsq_begin, cva6_profile_read()));
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++    cp_accumulate(CP_LSQ, cp_region_delta(lsq_begin, cp_region_read()));
 +#endif
  } /* lsq_ */
  

@@ -193,6 +193,13 @@ static inline cva6_profile_sample cva6_profile_delta(
 }
 
 /* Acumulados por paso. Las lecturas de entrada son locales a cada llamada. */
+/* 0: sin sondas internas; 1: solo mcycle; 2: ocho contadores (historico). */
+#ifndef RSHARC_CVA6_REGION_MODE
+#define RSHARC_CVA6_REGION_MODE 2
+#endif
+#if RSHARC_CVA6_REGION_MODE < 0 || RSHARC_CVA6_REGION_MODE > 2
+#error "RSHARC_CVA6_REGION_MODE debe ser 0, 1 o 2"
+#endif
 enum { CP_LSQ, CP_H12, CP_DOT, CP_AXPY, CP_MODEL_JAC, CP_REGION_COUNT };
 
 #ifdef __cplusplus
@@ -204,15 +211,39 @@ extern uint64_t cp_calls[CP_REGION_COUNT];
 }
 #endif
 
-static inline void cp_accumulate(unsigned region, cva6_profile_sample delta)
+#if RSHARC_CVA6_REGION_MODE == 1
+typedef uint64_t cp_region_sample;
+static inline cp_region_sample cp_region_read(void)
+{
+    uint64_t cycles = 0;
+#if CVA6_PROFILE_ACTIVE
+    __asm__ volatile("csrr %0, 0xB00" : "=r"(cycles) :: "memory");
+#endif
+    return cycles;
+}
+static inline cp_region_sample cp_region_delta(uint64_t begin, uint64_t end)
+{
+    return end - begin;
+}
+#else
+typedef cva6_profile_sample cp_region_sample;
+#define cp_region_read cva6_profile_read
+#define cp_region_delta cva6_profile_delta
+#endif
+
+static inline void cp_accumulate(unsigned region, cp_region_sample delta)
 {
 #if CVA6_PROFILE_ACTIVE
+#if RSHARC_CVA6_REGION_MODE == 1
+    cp_totals[region].cycles += delta;
+#else
     if (!delta.available) return;
     cp_totals[region].available = 1;
     cp_totals[region].cycles += delta.cycles;
     cp_totals[region].instret += delta.instret;
     for (unsigned i = 0; i < 6; ++i)
         cp_totals[region].events[i] += delta.events[i];
+#endif
     ++cp_calls[region];
 #else
     (void)region;
@@ -223,7 +254,7 @@ static inline void cp_accumulate(unsigned region, cva6_profile_sample delta)
 /* Descriptor en reserved: marca, direccion fisica, tamano; sin cambiar mailbox. */
 #define CVA6_REGION_MAGIC UINT64_C(0x5253485245473031)
 typedef struct {
-    uint64_t schema;
+    uint64_t schema; /* 1: full, 2: cycles, 3: off; mismo tamano de paquete. */
     uint64_t k;
     uint64_t event_ids[6];
     cva6_profile_sample global;
@@ -282,8 +313,27 @@ static inline void cva6_region_log(FILE *stream, const cva6_region_packet *packe
     static const char *names[CP_REGION_COUNT] = {
         "lsq", "h12", "h12_dot", "h12_axpy", "model_jac"
     };
+    if (packet->schema == 3) return;
     for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
         const cva6_profile_sample *sample = &packet->regions[r];
+        if (packet->schema == 2) {
+            fprintf(stream,
+                "RSHARC_REGION_CYCLES_V1 {\"schema\":1,\"mode\":\"cycles\","
+                "\"k\":%llu,\"region\":\"%s\",\"available\":%llu,"
+                "\"calls\":%llu,\"cycles\":%llu,\"instret\":null,"
+                "\"event_ids\":[],\"counts\":null,\"mpc_cycles\":%llu,"
+                "\"cycles_percent\":",
+                (unsigned long long)packet->k, names[r],
+                (unsigned long long)sample->available,
+                (unsigned long long)packet->calls[r],
+                (unsigned long long)sample->cycles,
+                (unsigned long long)packet->global.cycles);
+            if (sample->available && packet->global.cycles)
+                fprintf(stream, "%.6f", 100.0 * sample->cycles / packet->global.cycles);
+            else fputs("null", stream);
+            fputs("}\n", stream);
+            continue;
+        }
         fprintf(stream,
             "RSHARC_REGION_HPM_V1 {\"schema\":1,\"k\":%llu,"
             "\"region\":\"%s\",\"available\":%llu,\"calls\":%llu,"

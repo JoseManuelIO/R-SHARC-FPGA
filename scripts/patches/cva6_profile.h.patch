@@ -1,15 +1,15 @@
 # Archivo: src/common/cva6_profile.h
-# Fecha de registro: 2026-11-19 (Europe/Madrid)
+# Fecha de registro: 2026-11-20 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Lecturas HPM existentes, acumulacion de cinco regiones y salida JSON con porcentajes; grupo B conservado.
-# SHA256 del archivo resultante: 815c456d1cdb4423e316af9f3fe5be0823cc132439d4a9fe74e27e058e1c56b5
+# Cambios acumulados: regiones simultaneas con modos off/cycles/full, paquete versionado y grupo B global.
+# SHA256 del archivo resultante: 2894c877e2807d5e6c9364207887be4d2d64f3755aa4d3023f707375887a29ad
 
 diff --git a/src/common/cva6_profile.h b/src/common/cva6_profile.h
 new file mode 100644
-index 0000000..8d078f7
+index 0000000..02ad8fb
 --- /dev/null
 +++ b/src/common/cva6_profile.h
-@@ -0,0 +1,347 @@
+@@ -0,0 +1,397 @@
 +#ifndef RSHARC_CVA6_PROFILE_H
 +#define RSHARC_CVA6_PROFILE_H
 +
@@ -205,6 +205,13 @@ index 0000000..8d078f7
 +}
 +
 +/* Acumulados por paso. Las lecturas de entrada son locales a cada llamada. */
++/* 0: sin sondas internas; 1: solo mcycle; 2: ocho contadores (historico). */
++#ifndef RSHARC_CVA6_REGION_MODE
++#define RSHARC_CVA6_REGION_MODE 2
++#endif
++#if RSHARC_CVA6_REGION_MODE < 0 || RSHARC_CVA6_REGION_MODE > 2
++#error "RSHARC_CVA6_REGION_MODE debe ser 0, 1 o 2"
++#endif
 +enum { CP_LSQ, CP_H12, CP_DOT, CP_AXPY, CP_MODEL_JAC, CP_REGION_COUNT };
 +
 +#ifdef __cplusplus
@@ -216,15 +223,39 @@ index 0000000..8d078f7
 +}
 +#endif
 +
-+static inline void cp_accumulate(unsigned region, cva6_profile_sample delta)
++#if RSHARC_CVA6_REGION_MODE == 1
++typedef uint64_t cp_region_sample;
++static inline cp_region_sample cp_region_read(void)
++{
++    uint64_t cycles = 0;
++#if CVA6_PROFILE_ACTIVE
++    __asm__ volatile("csrr %0, 0xB00" : "=r"(cycles) :: "memory");
++#endif
++    return cycles;
++}
++static inline cp_region_sample cp_region_delta(uint64_t begin, uint64_t end)
++{
++    return end - begin;
++}
++#else
++typedef cva6_profile_sample cp_region_sample;
++#define cp_region_read cva6_profile_read
++#define cp_region_delta cva6_profile_delta
++#endif
++
++static inline void cp_accumulate(unsigned region, cp_region_sample delta)
 +{
 +#if CVA6_PROFILE_ACTIVE
++#if RSHARC_CVA6_REGION_MODE == 1
++    cp_totals[region].cycles += delta;
++#else
 +    if (!delta.available) return;
 +    cp_totals[region].available = 1;
 +    cp_totals[region].cycles += delta.cycles;
 +    cp_totals[region].instret += delta.instret;
 +    for (unsigned i = 0; i < 6; ++i)
 +        cp_totals[region].events[i] += delta.events[i];
++#endif
 +    ++cp_calls[region];
 +#else
 +    (void)region;
@@ -235,7 +266,7 @@ index 0000000..8d078f7
 +/* Descriptor en reserved: marca, direccion fisica, tamano; sin cambiar mailbox. */
 +#define CVA6_REGION_MAGIC UINT64_C(0x5253485245473031)
 +typedef struct {
-+    uint64_t schema;
++    uint64_t schema; /* 1: full, 2: cycles, 3: off; mismo tamano de paquete. */
 +    uint64_t k;
 +    uint64_t event_ids[6];
 +    cva6_profile_sample global;
@@ -294,8 +325,27 @@ index 0000000..8d078f7
 +    static const char *names[CP_REGION_COUNT] = {
 +        "lsq", "h12", "h12_dot", "h12_axpy", "model_jac"
 +    };
++    if (packet->schema == 3) return;
 +    for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
 +        const cva6_profile_sample *sample = &packet->regions[r];
++        if (packet->schema == 2) {
++            fprintf(stream,
++                "RSHARC_REGION_CYCLES_V1 {\"schema\":1,\"mode\":\"cycles\","
++                "\"k\":%llu,\"region\":\"%s\",\"available\":%llu,"
++                "\"calls\":%llu,\"cycles\":%llu,\"instret\":null,"
++                "\"event_ids\":[],\"counts\":null,\"mpc_cycles\":%llu,"
++                "\"cycles_percent\":",
++                (unsigned long long)packet->k, names[r],
++                (unsigned long long)sample->available,
++                (unsigned long long)packet->calls[r],
++                (unsigned long long)sample->cycles,
++                (unsigned long long)packet->global.cycles);
++            if (sample->available && packet->global.cycles)
++                fprintf(stream, "%.6f", 100.0 * sample->cycles / packet->global.cycles);
++            else fputs("null", stream);
++            fputs("}\n", stream);
++            continue;
++        }
 +        fprintf(stream,
 +            "RSHARC_REGION_HPM_V1 {\"schema\":1,\"k\":%llu,"
 +            "\"region\":\"%s\",\"available\":%llu,\"calls\":%llu,"

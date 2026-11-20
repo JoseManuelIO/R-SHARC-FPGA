@@ -66,7 +66,8 @@ static bool send(
     const cva6_profile_sample& profile)
 {
   cva6_region_packet packet{};
-  packet.schema = 1;
+  packet.schema = RSHARC_CVA6_REGION_MODE == 2 ? 1 :
+      (RSHARC_CVA6_REGION_MODE == 1 ? 2 : 3);
   packet.k = output.k;
   packet.global = profile;
   for (unsigned i = 0; i < 6; ++i)
@@ -223,7 +224,7 @@ int main() {
 #if CVA6_PROFILE_ACTIVE
       for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
         cp_totals[r] = {};
-        cp_totals[r].available = 1;
+        cp_totals[r].available = RSHARC_CVA6_REGION_MODE != 0;
         cp_calls[r] = 0;
       }
       const auto profile_begin = cva6_profile_read();

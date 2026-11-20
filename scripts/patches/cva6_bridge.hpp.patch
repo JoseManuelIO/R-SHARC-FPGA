@@ -1,11 +1,11 @@
 # Archivo: scripts/cva6_bridge.hpp
-# Fecha de registro: 2026-11-19 (Europe/Madrid)
+# Fecha de registro: 2026-11-20 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Validar paquete de regiones y escribir resultados y porcentaje sobre MPC; conservar protocolo HPM anterior.
-# SHA256 del archivo resultante: 463adcaaa15320b4972e03ef0bdf11693e4d1b1669bdd57e6695427fba2815fe
+# Cambios acumulados: regiones simultaneas con modos off/cycles/full, paquete versionado y grupo B global.
+# SHA256 del archivo resultante: 0b419fa2bafa048b8b47c0f5924f6ce48a430957936860882100a6f6af665d24
 
 diff --git a/scripts/cva6_bridge.hpp b/scripts/cva6_bridge.hpp
-index 5dc4218..c52556d 100644
+index 5dc4218..29b0ba9 100644
 --- a/scripts/cva6_bridge.hpp
 +++ b/scripts/cva6_bridge.hpp
 @@ -2,6 +2,8 @@
@@ -35,7 +35,7 @@ index 5dc4218..c52556d 100644
      const char* controller = std::getenv("MPC_CONTROLLER");
      if (!controller || (std::strcmp(controller, "acc") && std::strcmp(controller, "cartpole")))
        throw std::runtime_error("MPC_CONTROLLER must be acc or cartpole");
-@@ -81,6 +85,45 @@ class MPCBridge {
+@@ -81,6 +85,48 @@ class MPCBridge {
        std::uint64_t index;
        std::memcpy(&index, output, sizeof(index));
        if (index != responses) throw std::runtime_error("MPC response sequence");
@@ -59,7 +59,7 @@ index 5dc4218..c52556d 100644
 +            throw std::runtime_error("Invalid MPC region packet address/size");
 +          cva6_region_packet packet{};
 +          std::memcpy(&packet, ram_base + address - 0x80000000ULL, sizeof(packet));
-+          if (packet.schema != 1 || packet.k != decoded.k ||
++          if (packet.schema < 1 || packet.schema > 3 || packet.k != decoded.k ||
 +              packet.global.available != 1 || packet.global.cycles != decoded.cycles ||
 +              packet.global.instret != decoded.instret)
 +            throw std::runtime_error("Invalid MPC region packet schema/step/global");
@@ -69,6 +69,9 @@ index 5dc4218..c52556d 100644
 +            reserved[i + 1] = packet.global.events[i];
 +          }
 +          reserved[0] = CVA6_PROFILE_MAGIC;
++          std::fprintf(stderr, "RSHARC_PROFILE_MODE k=%llu mode=%s\n",
++              (unsigned long long)packet.k,
++              packet.schema == 1 ? "full" : (packet.schema == 2 ? "cycles" : "off"));
 +          cva6_region_log(stderr, &packet);
 +        }
 +        cva6_profile_log(

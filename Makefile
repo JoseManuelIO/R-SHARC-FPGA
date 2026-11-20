@@ -7,6 +7,11 @@ SPIKE ?= spike
 CMAKE ?= cmake
 PATCH ?= patch
 PROFILE ?= spike
+CARTPOLE_PROFILE_REGIONS ?= full
+ifeq ($(filter $(CARTPOLE_PROFILE_REGIONS),off cycles full),)
+$(error CARTPOLE_PROFILE_REGIONS debe ser off, cycles o full)
+endif
+REGION_MODE := $(if $(filter off,$(CARTPOLE_PROFILE_REGIONS)),0,$(if $(filter cycles,$(CARTPOLE_PROFILE_REGIONS)),1,2))
 ACC_STEPS ?= 64
 HOST_CC ?= gcc
 HOST_CXX ?= g++
@@ -171,6 +176,7 @@ $(CONFIG): FORCE
 	      'CXX_PATH='"$$(command -v "$(RV_CXX)")" \
 	      'OSQP_CFLAGS=$(OSQP_CFLAGS)' \
 	      'OSQP_RELEASE_FLAGS=-O2 -DNDEBUG' \
+	      'CARTPOLE_PROFILE_REGIONS=$(CARTPOLE_PROFILE_REGIONS)' \
 	      'PROFILE=$(PROFILE)'; \
 	    "$(RV_CC)" --version; \
 	    "$(RV_CXX)" --version; \
@@ -256,6 +262,7 @@ NLOPT_CFLAGS := $(ARCH_FLAGS) $(FP_FLAGS)
 ifeq ($(PROFILE),verilator)
 NLOPT_SOURCE := $(BUILD)/nlopt-src
 NLOPT_CFLAGS += -I$(CURDIR)/src/common -DRSHARC_CVA6_PROFILE_ENABLE=1
+NLOPT_CFLAGS += -DRSHARC_CVA6_REGION_MODE=$(REGION_MODE)
 endif
 
 NLOPT_PLATFORM := -DCMAKE_SYSTEM_NAME=Linux
@@ -341,6 +348,7 @@ endif
 ifeq ($(PROFILE),verilator)
 CARTPOLE_DEFINES += -DRSHARC_BAREMETAL_DISABLE_CONSOLE -DRSHARC_CARTPOLE_CVA6_CHANNEL
 CARTPOLE_DEFINES += -DRSHARC_CVA6_PROFILE_ENABLE=1
+CARTPOLE_DEFINES += -DRSHARC_CVA6_REGION_MODE=$(REGION_MODE)
 CARTPOLE_INCLUDES := $(filter-out -Iexternal/libmpc/include,$(CARTPOLE_INCLUDES)) -I"$(LIBMPC_DIR)/include"
 endif
 CARTPOLE_OBJECTS := $(addprefix $(CARTPOLE_DIR)/obj/,$(addsuffix .o,$(basename $(CARTPOLE_SOURCES))))

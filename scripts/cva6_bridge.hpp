@@ -105,7 +105,7 @@ class MPCBridge {
             throw std::runtime_error("Invalid MPC region packet address/size");
           cva6_region_packet packet{};
           std::memcpy(&packet, ram_base + address - 0x80000000ULL, sizeof(packet));
-          if (packet.schema != 1 || packet.k != decoded.k ||
+          if (packet.schema < 1 || packet.schema > 3 || packet.k != decoded.k ||
               packet.global.available != 1 || packet.global.cycles != decoded.cycles ||
               packet.global.instret != decoded.instret)
             throw std::runtime_error("Invalid MPC region packet schema/step/global");
@@ -115,6 +115,9 @@ class MPCBridge {
             reserved[i + 1] = packet.global.events[i];
           }
           reserved[0] = CVA6_PROFILE_MAGIC;
+          std::fprintf(stderr, "RSHARC_PROFILE_MODE k=%llu mode=%s\n",
+              (unsigned long long)packet.k,
+              packet.schema == 1 ? "full" : (packet.schema == 2 ? "cycles" : "off"));
           cva6_region_log(stderr, &packet);
         }
         cva6_profile_log(

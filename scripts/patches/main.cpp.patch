@@ -1,11 +1,11 @@
 # Archivo: src/cartpole/main.cpp
-# Fecha de registro: 2026-11-19 (Europe/Madrid)
+# Fecha de registro: 2026-11-20 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Medida global y cinco acumuladores por paso; publicar paquete de regiones mediante el canal existente.
-# SHA256 del archivo resultante: 0c444bf16ce30a25aa49c5ebeb1ce4acd16e208404b6de3ba8026c20b45802ea
+# Cambios acumulados: regiones simultaneas con modos off/cycles/full, paquete versionado y grupo B global.
+# SHA256 del archivo resultante: 9a816e41442de852f1c0ffec87934786574b783fda81a13424b500c4b6c3a6d7
 
 diff --git a/src/cartpole/main.cpp b/src/cartpole/main.cpp
-index d6f5b14..8e03fe9 100644
+index d6f5b14..04e8192 100644
 --- a/src/cartpole/main.cpp
 +++ b/src/cartpole/main.cpp
 @@ -7,11 +7,19 @@
@@ -28,7 +28,7 @@ index d6f5b14..8e03fe9 100644
  extern "C" std::size_t rsharc_heap_high_water();
  extern "C" std::size_t rsharc_heap_capacity();
  
-@@ -40,18 +48,67 @@ static bool receive(CartpoleStepInput& input) {
+@@ -40,18 +48,68 @@ static bool receive(CartpoleStepInput& input) {
    exchange_end(previous);
    return true;
  }
@@ -51,7 +51,8 @@ index d6f5b14..8e03fe9 100644
 +    const cva6_profile_sample& profile)
 +{
 +  cva6_region_packet packet{};
-+  packet.schema = 1;
++  packet.schema = RSHARC_CVA6_REGION_MODE == 2 ? 1 :
++      (RSHARC_CVA6_REGION_MODE == 1 ? 2 : 3);
 +  packet.k = output.k;
 +  packet.global = profile;
 +  for (unsigned i = 0; i < 6; ++i)
@@ -99,7 +100,7 @@ index d6f5b14..8e03fe9 100644
  #elif defined(__riscv)
  extern "C" volatile std::uint64_t tohost, fromhost;
  extern "C" std::size_t rsharc_heap_high_water();
-@@ -77,14 +134,33 @@ static bool transfer(std::uint64_t operation, void* data, std::size_t size) {
+@@ -77,14 +135,33 @@ static bool transfer(std::uint64_t operation, void* data, std::size_t size) {
    return true;
  }
  static bool receive(CartpoleStepInput& input) { return transfer(63, &input, sizeof(input)); }
@@ -136,7 +137,7 @@ index d6f5b14..8e03fe9 100644
  #endif
  
  static std::uint64_t cycle() {
-@@ -122,6 +198,11 @@ int main() {
+@@ -122,6 +199,11 @@ int main() {
      mpc::Logger::instance().setLevel(mpc::Logger::log_level::NONE);
      const auto config = nlohmann::json::parse(rsharc_cartpole::config_json);
      auto controller = std::make_unique<CartpoleServiceController>(config);
@@ -148,7 +149,7 @@ index d6f5b14..8e03fe9 100644
      for (std::uint64_t k = 0; k < RSHARC_CARTPOLE_MAX_STEPS; ++k) {
        CartpoleStepInput input{};
        if (!receive(input) || input.k != k || !std::isfinite(input.t)) return 88;
-@@ -135,9 +216,33 @@ int main() {
+@@ -135,9 +217,33 @@ int main() {
        disturbance(0) = input.w[0];
        previous(0) = input.u_previous[0];
        controller->seedControl(previous);
@@ -159,7 +160,7 @@ index d6f5b14..8e03fe9 100644
 +#if CVA6_PROFILE_ACTIVE
 +      for (unsigned r = 0; r < CP_REGION_COUNT; ++r) {
 +        cp_totals[r] = {};
-+        cp_totals[r].available = 1;
++        cp_totals[r].available = RSHARC_CVA6_REGION_MODE != 0;
 +        cp_calls[r] = 0;
 +      }
 +      const auto profile_begin = cva6_profile_read();
@@ -183,7 +184,7 @@ index d6f5b14..8e03fe9 100644
        const auto control = controller->getLatestControl();
        if (!control.allFinite()) return 90;
        const auto metadata = controller->getLatestMetadata();
-@@ -148,14 +253,25 @@ int main() {
+@@ -148,14 +254,25 @@ int main() {
        output.cost_available = metadata.at("cost_available").get<bool>();
        output.u = control(0);
        if (output.cost_available) output.cost = metadata.at("cost").get<double>();

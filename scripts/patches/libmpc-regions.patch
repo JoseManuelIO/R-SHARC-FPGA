@@ -1,8 +1,8 @@
 # Archivo de la copia: include/mpc/NLMPC/Constraints.hpp
-# Fecha: 2026-11-19
-# Aplicar con patch -p1 sobre la copia bajo build/; external/ permanece intacto.
+# Fecha: 2026-11-20
+# Modos: off, cycles, full. Aplicar con patch -p1 sobre build/.
 # SHA256 original: e5bd5a3d8d5d07729047bcceffab3dc4b51066079d408d9370567e0ffafb6c1a
-# SHA256 resultante: 4692526573083574acee64e4ce13f5309fbf5bf7cffa25b31205c3e0a7eb9c52
+# SHA256 resultante: 68ce592eb4093e259fe5822722da66283a2d8dcdde5ab7467d291dd8b4fa0bc9
 
 --- a/include/mpc/NLMPC/Constraints.hpp
 +++ b/include/mpc/NLMPC/Constraints.hpp
@@ -20,8 +20,8 @@
              // vector.
              cvec<sizer.nx> Xa = x0.cwiseAbs().cwiseMax(1.0);
  
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+            const auto jx_begin = cva6_profile_read();
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++            const auto jx_begin = cp_region_read();
 +#endif
              // Compute Jx using central difference method
              for (size_t i = 0; i < nx(); i++)
@@ -30,13 +30,13 @@
                  Jx.col(i) = df;
              }
  
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+            cp_accumulate(CP_MODEL_JAC, cva6_profile_delta(jx_begin, cva6_profile_read()));
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++            cp_accumulate(CP_MODEL_JAC, cp_region_delta(jx_begin, cp_region_read()));
 +#endif
              cvec<sizer.nu> Ua = u0.cwiseAbs().cwiseMax(1.0);
  
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+            const auto jmv_begin = cva6_profile_read();
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++            const auto jmv_begin = cp_region_read();
 +#endif
              // Compute Jmv using central difference method
              for (size_t i = 0; i < nu(); i++)
@@ -45,8 +45,8 @@
                  cvec<sizer.nx> df = (f_plus - f_minus) / (2 * du);
                  Jmv.col(i) = df;
              }
-+#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE
-+            cp_accumulate(CP_MODEL_JAC, cva6_profile_delta(jmv_begin, cva6_profile_read()));
++#if defined(RSHARC_CVA6_PROFILE_ENABLE) && RSHARC_CVA6_PROFILE_ENABLE && RSHARC_CVA6_REGION_MODE != 0
++            cp_accumulate(CP_MODEL_JAC, cp_region_delta(jmv_begin, cp_region_read()));
 +#endif
 +
          }
