@@ -1,11 +1,11 @@
 # Archivo: scripts/run_closed_loop.py
-# Fecha de registro: 2026-11-16 (Europe/Madrid)
+# Fecha de registro: 2026-11-23 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Copiar la cabecera de profiling al runner y registrar su hash en el contrato del canal.
-# SHA256 del archivo resultante: 7782a87959b3228fa9e6cf6bb9e28c9a3ba36d122954cb63cd0d1f6ba3705873
+# Cambios acumulados: Contrato de profiling del runner; validar que la referencia existe antes de iniciar una simulacion.
+# SHA256 del archivo resultante: e83ec487371eca294091203a1b919d098832333b39faee30558d94cc2711e2ed
 
 diff --git a/scripts/run_closed_loop.py b/scripts/run_closed_loop.py
-index f981595..92293a5 100644
+index f981595..f0644c4 100644
 --- a/scripts/run_closed_loop.py
 +++ b/scripts/run_closed_loop.py
 @@ -371,7 +371,7 @@ def execute_pair(command, args, environment, out, manifest):
@@ -25,3 +25,12 @@ index f981595..92293a5 100644
      shutil.copy2(ROOT / "scripts/cva6_bridge.hpp", out / "cva6_bridge.hpp")
      # Existing dump-enabled testbenches may include this header as well.
      for header in source.parent.glob("*.hpp"):
+@@ -445,6 +446,8 @@ def prepare_runner(args):
+ 
+ def run(args):
+     require(not args.exact or args.reference is not None, "--exact requires --reference")
++    require(args.reference is None or args.reference.is_file(),
++            "Reference capture not found or not a file: " + str(args.reference))
+     elf, out = args.elf.resolve(), args.out.resolve()
+     cartpole = args.controller == "cartpole"
+     plant = ROOT / "src/dynamics" / (args.controller + ".py")

@@ -1,11 +1,11 @@
 # Archivo: Makefile
-# Fecha de registro: 2026-11-20 (Europe/Madrid)
+# Fecha de registro: 2026-11-23 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: regiones simultaneas con modos off/cycles/full, paquete versionado y grupo B global.
-# SHA256 del archivo resultante: e7ebb7fcffd8d3c611709d13b285de5316336780e8e80e1f70d3bb2b9ae1b69e
+# Cambios acumulados: Instrumentacion off/cycles/full; omitir --reference si CARTPOLE_REFERENCE esta vacia.
+# SHA256 del archivo resultante: 59b0fb4cd4983589bf5908d2901059941d9bcbc536f33ef1c0bbc35bd4dd1ead
 
 diff --git a/Makefile b/Makefile
-index bc312b1..0c0c686 100644
+index bc312b1..a5aeb63 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -7,6 +7,11 @@ SPIKE ?= spike
@@ -100,3 +100,9 @@ index bc312b1..0c0c686 100644
  
  $(CARTPOLE_DIR)/obj/%.o: %.cpp
  	@printf 'CXX %s\n' "$<"
+@@ -390,4 +413,4 @@ run-cartpole-current: cartpole
+ 	  --prefix "$(RISCV_PREFIX)" --runner "$(CVA6_RUNNER)" --seed $(SEED) \
+ 	  --max-cycles $(CARTPOLE_MAX_CYCLES) \
+ 	  --timeout $(if $(filter verilator,$(PROFILE)),$(CARTPOLE_HOST_TIMEOUT),$(HOST_TIMEOUT)) \
+-	  $(if $(filter spike verilator,$(PROFILE)),--reference "$(CARTPOLE_REFERENCE)",)
++	  $(if $(and $(filter spike verilator,$(PROFILE)),$(strip $(CARTPOLE_REFERENCE))),--reference "$(CARTPOLE_REFERENCE)",)

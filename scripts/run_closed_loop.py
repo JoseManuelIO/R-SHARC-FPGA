@@ -446,6 +446,8 @@ def prepare_runner(args):
 
 def run(args):
     require(not args.exact or args.reference is not None, "--exact requires --reference")
+    require(args.reference is None or args.reference.is_file(),
+            "Reference capture not found or not a file: " + str(args.reference))
     elf, out = args.elf.resolve(), args.out.resolve()
     cartpole = args.controller == "cartpole"
     plant = ROOT / "src/dynamics" / (args.controller + ".py")

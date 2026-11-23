@@ -413,4 +413,4 @@ run-cartpole-current: cartpole
 	  --prefix "$(RISCV_PREFIX)" --runner "$(CVA6_RUNNER)" --seed $(SEED) \
 	  --max-cycles $(CARTPOLE_MAX_CYCLES) \
 	  --timeout $(if $(filter verilator,$(PROFILE)),$(CARTPOLE_HOST_TIMEOUT),$(HOST_TIMEOUT)) \
-	  $(if $(filter spike verilator,$(PROFILE)),--reference "$(CARTPOLE_REFERENCE)",)
+	  $(if $(and $(filter spike verilator,$(PROFILE)),$(strip $(CARTPOLE_REFERENCE))),--reference "$(CARTPOLE_REFERENCE)",)
