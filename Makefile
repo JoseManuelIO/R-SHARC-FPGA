@@ -265,7 +265,7 @@ NLOPT_LIB := $(NLOPT_BUILD)/libnlopt.a
 NLOPT_CONFIGURED := $(NLOPT_BUILD)/.configured
 NLOPT_INPUTS := $(shell find external/nlopt -type f)
 NLOPT_SOURCE := $(CURDIR)/external/nlopt
-NLOPT_CFLAGS := $(ARCH_FLAGS) $(FP_FLAGS)
+NLOPT_CFLAGS := $(ARCH_FLAGS) $(FP_FLAGS) -funroll-loops
 ifeq ($(PROFILE),verilator)
 NLOPT_SOURCE := $(BUILD)/nlopt-src
 NLOPT_CFLAGS += -I$(CURDIR)/src/common -DRSHARC_CVA6_PROFILE_ENABLE=1
