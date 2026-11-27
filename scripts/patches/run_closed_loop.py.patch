@@ -1,11 +1,11 @@
 # Archivo: scripts/run_closed_loop.py
-# Fecha de registro: 2026-11-23 (Europe/Madrid)
+# Fecha de registro: 2026-11-27 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Contrato de profiling del runner; validar que la referencia existe antes de iniciar una simulacion.
-# SHA256 del archivo resultante: e83ec487371eca294091203a1b919d098832333b39faee30558d94cc2711e2ed
+# Cambios acumulados: Contrato de profiling, validacion de referencia y seleccion/verificacion del grupo A/B del runner.
+# SHA256 del archivo resultante: 63b1b5cf0a4c7a5b36bd32137485b93e66d8abdf5eda45ff0c68827744a51997
 
 diff --git a/scripts/run_closed_loop.py b/scripts/run_closed_loop.py
-index f981595..f0644c4 100644
+index f981595..c8955cb 100644
 --- a/scripts/run_closed_loop.py
 +++ b/scripts/run_closed_loop.py
 @@ -371,7 +371,7 @@ def execute_pair(command, args, environment, out, manifest):
@@ -17,7 +17,14 @@ index f981595..f0644c4 100644
  
  
  def prepare_runner(args):
-@@ -418,6 +418,7 @@ def prepare_runner(args):
+@@ -414,10 +414,13 @@ def prepare_runner(args):
+     require(not build.is_relative_to(out), "Runner destination contains source build")
+     shutil.copytree(build, out, symlinks=True)
+     patched = out / "ariane_tb_mpc.cpp"
+-    patched.write_text(text)
++    # El puente debe validar los mismos selectores que el firmware.
++    group_id = {"A": 1, "B": 2}[args.profile_group]
++    patched.write_text(f"#define RSHARC_CVA6_PROFILE_GROUP {group_id}\n" + text)
      for name in ("acc_channel.hpp", "ACC_Step_Types.h", "acc_capture.hpp"):
          shutil.copy2(ROOT / "src/acc" / name, out / name)
      shutil.copy2(ROOT / "src/cartpole/cartpole_channel.hpp", out / "cartpole_channel.hpp")
@@ -25,7 +32,15 @@ index f981595..f0644c4 100644
      shutil.copy2(ROOT / "scripts/cva6_bridge.hpp", out / "cva6_bridge.hpp")
      # Existing dump-enabled testbenches may include this header as well.
      for header in source.parent.glob("*.hpp"):
-@@ -445,6 +446,8 @@ def prepare_runner(args):
+@@ -436,6 +439,7 @@ def prepare_runner(args):
+         "original_runner_sha256": sha(build / "Variane_testharness"),
+         "runner_sha256": sha(out / "Variane_testharness"),
+         "bridge_sha256": sha(ROOT / "scripts/cva6_bridge.hpp"),
++        "profile_group": args.profile_group,
+         "channel_sha256": channel_hashes(), "command": command,
+         "max_cycles_limit": max_cycles_limit,
+         "generated_counters_sha256": sha(build / "Variane_testharness___024root.h"),
+@@ -445,6 +449,8 @@ def prepare_runner(args):
  
  def run(args):
      require(not args.exact or args.reference is not None, "--exact requires --reference")
@@ -34,3 +49,24 @@ index f981595..f0644c4 100644
      elf, out = args.elf.resolve(), args.out.resolve()
      cartpole = args.controller == "cartpole"
      plant = ROOT / "src/dynamics" / (args.controller + ".py")
+@@ -487,6 +493,12 @@ def run(args):
+                     provenance["bridge_sha256"] == sha(ROOT / "scripts/cva6_bridge.hpp") and
+                     provenance["channel_sha256"] == channel_hashes(),
+                     "Runner/channel changed: regenerate the shared MPC runner")
++            profile_group = next((line.split("=", 1)[1]
++                                  for line in manifest["build_config"].splitlines()
++                                  if line.startswith("CARTPOLE_PROFILE_GROUP=")), "B")
++            require(provenance.get("profile_group", "B") == profile_group,
++                    "Runner HPM group mismatch: regenerate with CARTPOLE_PROFILE_GROUP=" + profile_group)
++            manifest["profile_group"] = profile_group
+             require(1 <= args.max_cycles <= provenance["max_cycles_limit"] and 0 <= args.seed <= 4294967295,
+                     "Runner cycle/seed parameters outside supported range")
+             syms = symbols(elf, args.prefix, args.controller)
+@@ -573,6 +585,7 @@ def main():
+     prepare.add_argument("--source", type=Path, required=True)
+     prepare.add_argument("--runner-build", type=Path, required=True)
+     prepare.add_argument("--out", type=Path, required=True)
++    prepare.add_argument("--profile-group", choices=("A", "B"), default="B")
+     plant = sub.add_parser("plant")
+     plant.add_argument("--steps", type=int, required=True)
+     plant.add_argument("--out", type=Path, required=True)

@@ -414,7 +414,9 @@ def prepare_runner(args):
     require(not build.is_relative_to(out), "Runner destination contains source build")
     shutil.copytree(build, out, symlinks=True)
     patched = out / "ariane_tb_mpc.cpp"
-    patched.write_text(text)
+    # El puente debe validar los mismos selectores que el firmware.
+    group_id = {"A": 1, "B": 2}[args.profile_group]
+    patched.write_text(f"#define RSHARC_CVA6_PROFILE_GROUP {group_id}\n" + text)
     for name in ("acc_channel.hpp", "ACC_Step_Types.h", "acc_capture.hpp"):
         shutil.copy2(ROOT / "src/acc" / name, out / name)
     shutil.copy2(ROOT / "src/cartpole/cartpole_channel.hpp", out / "cartpole_channel.hpp")
@@ -437,6 +439,7 @@ def prepare_runner(args):
         "original_runner_sha256": sha(build / "Variane_testharness"),
         "runner_sha256": sha(out / "Variane_testharness"),
         "bridge_sha256": sha(ROOT / "scripts/cva6_bridge.hpp"),
+        "profile_group": args.profile_group,
         "channel_sha256": channel_hashes(), "command": command,
         "max_cycles_limit": max_cycles_limit,
         "generated_counters_sha256": sha(build / "Variane_testharness___024root.h"),
@@ -490,6 +493,12 @@ def run(args):
                     provenance["bridge_sha256"] == sha(ROOT / "scripts/cva6_bridge.hpp") and
                     provenance["channel_sha256"] == channel_hashes(),
                     "Runner/channel changed: regenerate the shared MPC runner")
+            profile_group = next((line.split("=", 1)[1]
+                                  for line in manifest["build_config"].splitlines()
+                                  if line.startswith("CARTPOLE_PROFILE_GROUP=")), "B")
+            require(provenance.get("profile_group", "B") == profile_group,
+                    "Runner HPM group mismatch: regenerate with CARTPOLE_PROFILE_GROUP=" + profile_group)
+            manifest["profile_group"] = profile_group
             require(1 <= args.max_cycles <= provenance["max_cycles_limit"] and 0 <= args.seed <= 4294967295,
                     "Runner cycle/seed parameters outside supported range")
             syms = symbols(elf, args.prefix, args.controller)
@@ -576,6 +585,7 @@ def main():
     prepare.add_argument("--source", type=Path, required=True)
     prepare.add_argument("--runner-build", type=Path, required=True)
     prepare.add_argument("--out", type=Path, required=True)
+    prepare.add_argument("--profile-group", choices=("A", "B"), default="B")
     plant = sub.add_parser("plant")
     plant.add_argument("--steps", type=int, required=True)
     plant.add_argument("--out", type=Path, required=True)

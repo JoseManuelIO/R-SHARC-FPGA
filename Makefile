@@ -7,6 +7,11 @@ SPIKE ?= spike
 CMAKE ?= cmake
 PATCH ?= patch
 PROFILE ?= spike
+CARTPOLE_PROFILE_GROUP ?= B
+ifeq ($(filter $(CARTPOLE_PROFILE_GROUP),A B),)
+$(error CARTPOLE_PROFILE_GROUP debe ser A o B)
+endif
+PROFILE_GROUP_ID := $(if $(filter A,$(CARTPOLE_PROFILE_GROUP)),1,2)
 CARTPOLE_PROFILE_REGIONS ?= full
 ifeq ($(filter $(CARTPOLE_PROFILE_REGIONS),off cycles full),)
 $(error CARTPOLE_PROFILE_REGIONS debe ser off, cycles o full)
@@ -145,7 +150,8 @@ prepare-acc-runner prepare-cartpole-runner: prepare-runner
 
 prepare-runner:
 	$(Q)$(PYTHON) scripts/run_closed_loop.py prepare-runner --source "$(CVA6_TB)" \
-	  --runner-build "$(CVA6_BUILD)" --out "$(CVA6_RUNNER_DIR)"
+	  --runner-build "$(CVA6_BUILD)" --out "$(CVA6_RUNNER_DIR)" \
+	  --profile-group "$(CARTPOLE_PROFILE_GROUP)"
 
 help:
 	@printf '%s\n' \
@@ -176,6 +182,7 @@ $(CONFIG): FORCE
 	      'CXX_PATH='"$$(command -v "$(RV_CXX)")" \
 	      'OSQP_CFLAGS=$(OSQP_CFLAGS)' \
 	      'OSQP_RELEASE_FLAGS=-O2 -DNDEBUG' \
+	      'CARTPOLE_PROFILE_GROUP=$(CARTPOLE_PROFILE_GROUP)' \
 	      'CARTPOLE_PROFILE_REGIONS=$(CARTPOLE_PROFILE_REGIONS)' \
 	      'PROFILE=$(PROFILE)'; \
 	    "$(RV_CC)" --version; \
@@ -263,6 +270,7 @@ ifeq ($(PROFILE),verilator)
 NLOPT_SOURCE := $(BUILD)/nlopt-src
 NLOPT_CFLAGS += -I$(CURDIR)/src/common -DRSHARC_CVA6_PROFILE_ENABLE=1
 NLOPT_CFLAGS += -DRSHARC_CVA6_REGION_MODE=$(REGION_MODE)
+NLOPT_CFLAGS += -DRSHARC_CVA6_PROFILE_GROUP=$(PROFILE_GROUP_ID)
 endif
 
 NLOPT_PLATFORM := -DCMAKE_SYSTEM_NAME=Linux
@@ -349,6 +357,7 @@ ifeq ($(PROFILE),verilator)
 CARTPOLE_DEFINES += -DRSHARC_BAREMETAL_DISABLE_CONSOLE -DRSHARC_CARTPOLE_CVA6_CHANNEL
 CARTPOLE_DEFINES += -DRSHARC_CVA6_PROFILE_ENABLE=1
 CARTPOLE_DEFINES += -DRSHARC_CVA6_REGION_MODE=$(REGION_MODE)
+CARTPOLE_DEFINES += -DRSHARC_CVA6_PROFILE_GROUP=$(PROFILE_GROUP_ID)
 CARTPOLE_INCLUDES := $(filter-out -Iexternal/libmpc/include,$(CARTPOLE_INCLUDES)) -I"$(LIBMPC_DIR)/include"
 endif
 CARTPOLE_OBJECTS := $(addprefix $(CARTPOLE_DIR)/obj/,$(addsuffix .o,$(basename $(CARTPOLE_SOURCES))))

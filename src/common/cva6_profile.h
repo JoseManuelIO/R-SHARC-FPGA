@@ -16,8 +16,13 @@
 # define CVA6_PROFILE_ACTIVE 0
 #endif
 
+/* Seleccion por compilacion: 1 = A (diagnostico), 2 = B (actividad). */
+#ifndef RSHARC_CVA6_PROFILE_GROUP
+#define RSHARC_CVA6_PROFILE_GROUP 2
+#endif
+
 /*
- * Grupo B: actividad.
+ * Grupo B (predeterminado): actividad.
  *
  * events[0] -> mhpmcounter3 -> evento 5:  ciclos con retirada LOAD
  * events[1] -> mhpmcounter4 -> evento 6:  ciclos con retirada STORE
@@ -26,9 +31,18 @@
  * events[4] -> mhpmcounter7 -> evento 20: ciclos con retirada ALU/MULT
  * events[5] -> mhpmcounter8 -> evento 21: ciclos con retirada FP
  */
+#if RSHARC_CVA6_PROFILE_GROUP == 1
+/* I-refill, D-read-MSHR, mispredict, scoreboard lleno, IF vacio, RAW. */
+static const uint64_t cva6_profile_event_ids[6] = {
+    1, 2, 10, 14, 15, 22
+};
+#elif RSHARC_CVA6_PROFILE_GROUP == 2
 static const uint64_t cva6_profile_event_ids[6] = {
     5, 6, 9, 10, 20, 21
 };
+#else
+#error "RSHARC_CVA6_PROFILE_GROUP debe ser 1 (A) o 2 (B)"
+#endif
 
 /*
  * Una lectura absoluta de los contadores.

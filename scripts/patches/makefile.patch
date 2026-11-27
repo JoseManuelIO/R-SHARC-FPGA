@@ -1,70 +1,49 @@
 # Archivo: Makefile
-# Fecha de registro: 2026-11-23 (Europe/Madrid)
+# Fecha de registro: 2026-11-27 (Europe/Madrid)
 # Base Git: 28359b8f72ef864c0e8770d5b15ef17983fa8a33
-# Cambios acumulados: Instrumentacion off/cycles/full; omitir --reference si CARTPOLE_REFERENCE esta vacia.
-# SHA256 del archivo resultante: 59b0fb4cd4983589bf5908d2901059941d9bcbc536f33ef1c0bbc35bd4dd1ead
+# Cambios acumulados: Instrumentacion off/cycles/full, seleccion A/B coherente y referencia opcional.
+# SHA256 del archivo resultante: 7042d0287436c6cbfc4d72c7810f4a6f05ce330dc053a48c16b6939eb7fbd936
 
 diff --git a/Makefile b/Makefile
-index bc312b1..a5aeb63 100644
+index bc312b1..74a8dc1 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -7,6 +7,11 @@ SPIKE ?= spike
- CMAKE ?= cmake
- PATCH ?= patch
- PROFILE ?= spike
+@@ -9,0 +10,10 @@ PROFILE ?= spike
++CARTPOLE_PROFILE_GROUP ?= B
++ifeq ($(filter $(CARTPOLE_PROFILE_GROUP),A B),)
++$(error CARTPOLE_PROFILE_GROUP debe ser A o B)
++endif
++PROFILE_GROUP_ID := $(if $(filter A,$(CARTPOLE_PROFILE_GROUP)),1,2)
 +CARTPOLE_PROFILE_REGIONS ?= full
 +ifeq ($(filter $(CARTPOLE_PROFILE_REGIONS),off cycles full),)
 +$(error CARTPOLE_PROFILE_REGIONS debe ser off, cycles o full)
 +endif
 +REGION_MODE := $(if $(filter off,$(CARTPOLE_PROFILE_REGIONS)),0,$(if $(filter cycles,$(CARTPOLE_PROFILE_REGIONS)),1,2))
- ACC_STEPS ?= 64
- HOST_CC ?= gcc
- HOST_CXX ?= g++
-@@ -171,6 +176,7 @@ $(CONFIG): FORCE
- 	      'CXX_PATH='"$$(command -v "$(RV_CXX)")" \
- 	      'OSQP_CFLAGS=$(OSQP_CFLAGS)' \
- 	      'OSQP_RELEASE_FLAGS=-O2 -DNDEBUG' \
+@@ -143 +153,2 @@ prepare-runner:
+-	  --runner-build "$(CVA6_BUILD)" --out "$(CVA6_RUNNER_DIR)"
++	  --runner-build "$(CVA6_BUILD)" --out "$(CVA6_RUNNER_DIR)" \
++	  --profile-group "$(CARTPOLE_PROFILE_GROUP)"
+@@ -173,0 +185,2 @@ $(CONFIG): FORCE
++	      'CARTPOLE_PROFILE_GROUP=$(CARTPOLE_PROFILE_GROUP)' \
 +	      'CARTPOLE_PROFILE_REGIONS=$(CARTPOLE_PROFILE_REGIONS)' \
- 	      'PROFILE=$(PROFILE)'; \
- 	    "$(RV_CC)" --version; \
- 	    "$(RV_CXX)" --version; \
-@@ -184,12 +190,13 @@ $(ACC_CONFIG): $(CONFIG) FORCE
- 	$(Q)if cmp -s "$@.tmp" "$@"; then rm -f "$@.tmp"; else mv "$@.tmp" "$@"; fi
- 
- # Cada parche se aplica una vez sobre una copia nueva, nunca sobre external/.
+@@ -187 +200 @@ $(ACC_CONFIG): $(CONFIG) FORCE
 -$(LIBMPC_STAMP): $(LIBMPC_INPUTS) scripts/patches/libmpc-baremetal.patch Makefile
 +$(LIBMPC_STAMP): $(LIBMPC_INPUTS) scripts/patches/libmpc-baremetal.patch scripts/patches/libmpc-regions.patch Makefile
- 	@printf '%s\n' 'PREPARE libmpc'
- 	$(Q)rm -rf -- "$(LIBMPC_DIR)"
- 	$(Q)mkdir -p "$(LIBMPC_DIR)"
- 	$(Q)cp -R external/libmpc/include "$(LIBMPC_DIR)/"
- 	$(Q)"$(PATCH)" --batch --fuzz=0 -p1 -d "$(LIBMPC_DIR)" -i "$(CURDIR)/scripts/patches/libmpc-baremetal.patch"
+@@ -192,0 +206 @@ $(LIBMPC_STAMP): $(LIBMPC_INPUTS) scripts/patches/libmpc-baremetal.patch Makefil
 +	$(Q)"$(PATCH)" --batch --fuzz=0 -p1 -d "$(LIBMPC_DIR)" -i "$(CURDIR)/scripts/patches/libmpc-regions.patch"
- 	$(Q)touch "$@"
- 
- $(OSQP_STAMP): $(OSQP_INPUTS) scripts/patches/osqp-baremetal.patch Makefile
-@@ -250,6 +257,13 @@ NLOPT_BUILD := $(BUILD)/nlopt
- NLOPT_LIB := $(NLOPT_BUILD)/libnlopt.a
- NLOPT_CONFIGURED := $(NLOPT_BUILD)/.configured
- NLOPT_INPUTS := $(shell find external/nlopt -type f)
+@@ -252,0 +267,8 @@ NLOPT_INPUTS := $(shell find external/nlopt -type f)
 +NLOPT_SOURCE := $(CURDIR)/external/nlopt
 +NLOPT_CFLAGS := $(ARCH_FLAGS) $(FP_FLAGS)
 +ifeq ($(PROFILE),verilator)
 +NLOPT_SOURCE := $(BUILD)/nlopt-src
 +NLOPT_CFLAGS += -I$(CURDIR)/src/common -DRSHARC_CVA6_PROFILE_ENABLE=1
 +NLOPT_CFLAGS += -DRSHARC_CVA6_REGION_MODE=$(REGION_MODE)
++NLOPT_CFLAGS += -DRSHARC_CVA6_PROFILE_GROUP=$(PROFILE_GROUP_ID)
 +endif
- 
- NLOPT_PLATFORM := -DCMAKE_SYSTEM_NAME=Linux
- ifneq ($(PROFILE),x86)
-@@ -259,14 +273,20 @@ endif
- .PHONY: nlopt
- nlopt: $(NLOPT_LIB)
- 
+@@ -262 +284 @@ nlopt: $(NLOPT_LIB)
 -$(NLOPT_CONFIGURED): $(CONFIG) Makefile external/nlopt/CMakeLists.txt
 +$(NLOPT_CONFIGURED): $(CONFIG) Makefile external/nlopt/CMakeLists.txt $(if $(filter verilator,$(PROFILE)),$(NLOPT_INPUTS) scripts/patches/nlopt-regions.patch src/common/cva6_profile.h,)
- 	@printf 'CONFIGURE NLopt (%s)\n' "$(PROFILE)"
- 	$(Q)rm -rf -- "$(NLOPT_BUILD)"
+@@ -265 +287,7 @@ $(NLOPT_CONFIGURED): $(CONFIG) Makefile external/nlopt/CMakeLists.txt
 -	$(Q)"$(CMAKE)" -S external/nlopt -B "$(NLOPT_BUILD)" -G "Unix Makefiles" \
 +ifeq ($(PROFILE),verilator)
 +	$(Q)rm -rf -- "$(NLOPT_SOURCE)"
@@ -73,36 +52,17 @@ index bc312b1..a5aeb63 100644
 +	$(Q)"$(PATCH)" --batch --fuzz=0 -p1 -d "$(NLOPT_SOURCE)" -i "$(CURDIR)/scripts/patches/nlopt-regions.patch"
 +endif
 +	$(Q)"$(CMAKE)" -S "$(NLOPT_SOURCE)" -B "$(NLOPT_BUILD)" -G "Unix Makefiles" \
- 	  $(NLOPT_PLATFORM) \
- 	  -DCMAKE_C_COMPILER="$(RV_CC)" -DCMAKE_CXX_COMPILER="$(RV_CXX)" \
- 	  -DCMAKE_BUILD_TYPE=Release \
+@@ -269 +297 @@ $(NLOPT_CONFIGURED): $(CONFIG) Makefile external/nlopt/CMakeLists.txt
 -	  -DCMAKE_C_FLAGS="$(ARCH_FLAGS) $(FP_FLAGS)" \
 +	  -DCMAKE_C_FLAGS="$(NLOPT_CFLAGS)" \
- 	  -DCMAKE_CXX_FLAGS="$(ARCH_FLAGS) $(FP_FLAGS)" \
- 	  -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
- 	  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
-@@ -327,6 +347,9 @@ CARTPOLE_LIBS := -Wl,--start-group "$(NLOPT_LIB)" \
- endif
- ifeq ($(PROFILE),verilator)
- CARTPOLE_DEFINES += -DRSHARC_BAREMETAL_DISABLE_CONSOLE -DRSHARC_CARTPOLE_CVA6_CHANNEL
+@@ -329,0 +358,4 @@ CARTPOLE_DEFINES += -DRSHARC_BAREMETAL_DISABLE_CONSOLE -DRSHARC_CARTPOLE_CVA6_CH
 +CARTPOLE_DEFINES += -DRSHARC_CVA6_PROFILE_ENABLE=1
 +CARTPOLE_DEFINES += -DRSHARC_CVA6_REGION_MODE=$(REGION_MODE)
++CARTPOLE_DEFINES += -DRSHARC_CVA6_PROFILE_GROUP=$(PROFILE_GROUP_ID)
 +CARTPOLE_INCLUDES := $(filter-out -Iexternal/libmpc/include,$(CARTPOLE_INCLUDES)) -I"$(LIBMPC_DIR)/include"
- endif
- CARTPOLE_OBJECTS := $(addprefix $(CARTPOLE_DIR)/obj/,$(addsuffix .o,$(basename $(CARTPOLE_SOURCES))))
- 
-@@ -349,7 +372,7 @@ $(CARTPOLE_CONFIG_HEADER): src/cartpole/config.json Makefile
- 	$(Q)$(PYTHON) -c 'import json,sys; print("#pragma once\nnamespace rsharc_cartpole { inline constexpr char config_json[] = " + json.dumps(sys.stdin.read()) + "; }")' < "$<" > "$@.tmp"
- 	$(Q)mv "$@.tmp" "$@"
- 
+@@ -352 +384 @@ $(CARTPOLE_CONFIG_HEADER): src/cartpole/config.json Makefile
 -$(CARTPOLE_OBJECTS): $(CARTPOLE_CONFIG_HEADER) $(CARTPOLE_CONFIG) $(NLOPT_LIB) Makefile
 +$(CARTPOLE_OBJECTS): $(CARTPOLE_CONFIG_HEADER) $(CARTPOLE_CONFIG) $(NLOPT_LIB) $(if $(filter verilator,$(PROFILE)),$(LIBMPC_STAMP),) Makefile
- 
- $(CARTPOLE_DIR)/obj/%.o: %.cpp
- 	@printf 'CXX %s\n' "$<"
-@@ -390,4 +413,4 @@ run-cartpole-current: cartpole
- 	  --prefix "$(RISCV_PREFIX)" --runner "$(CVA6_RUNNER)" --seed $(SEED) \
- 	  --max-cycles $(CARTPOLE_MAX_CYCLES) \
- 	  --timeout $(if $(filter verilator,$(PROFILE)),$(CARTPOLE_HOST_TIMEOUT),$(HOST_TIMEOUT)) \
+@@ -393 +425 @@ run-cartpole-current: cartpole
 -	  $(if $(filter spike verilator,$(PROFILE)),--reference "$(CARTPOLE_REFERENCE)",)
 +	  $(if $(and $(filter spike verilator,$(PROFILE)),$(strip $(CARTPOLE_REFERENCE))),--reference "$(CARTPOLE_REFERENCE)",)
